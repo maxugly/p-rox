@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "p-rox"
-version = "0.1.0"
+version = "0.0.1"
 description = "High-performance proxy acquisition, normalization, deduplication, and staged qualification engine"
 readme = "README.md"
 license = { text = "MIT" }

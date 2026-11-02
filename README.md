@@ -1,5 +1,6 @@
 # p-rox
 
+[![Version](https://img.shields.io/badge/version-0.0.1-blue.svg)](https://github.com/maxugly/p-rox)
 [![CI](https://github.com/maxugly/p-rox/actions/workflows/ci.yml/badge.svg)](https://github.com/maxugly/p-rox/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -28,9 +29,11 @@ flowchart TD
         L2 -->|"Production Traffic via RoutedSession\n(Streamed Download Success)"| L3["Layer 3: Live-Stream Qualified (L3)\n(Throughput Verified, Top Rank Priority)"]
     end
 
-    subgraph S3["3. Execution & Leasing"]
+    subgraph S3["3. Execution, Leasing & Local Gateway"]
         L2 & L3 --> E["ProxyLeases\n(Mutual Exclusion by Egress Identity)"]
         E --> F["RoutedSession / Worker Downloader\n(Exclusive Per-Site Egress Locks)"]
+        L2 & L3 --> G["Local Gateway Server\n(Static Slots 127.0.0.1:3030..3039,\nAuto-Healing & Hot-Swap)"]
+        G --> H["Any HTTP/SOCKS Client\n(curl, scrapers, browsers, Void runit)"]
     end
 ```
 
@@ -399,3 +402,21 @@ async def run_gateway():
 
 asyncio.run(run_gateway())
 ```
+
+---
+
+## Part 8: Testing & Development
+
+Run the offline regression test suite (mocked networking, zero outbound calls):
+
+```bash
+pytest -v
+```
+
+All 42 test units run in `<0.4s` covering concurrent feed downloads, multi-format stream parsing, canonical deduplication, staged pool progression, identity leasing, circuit breaker quaratine, and local gateway transparent tunneling.
+
+---
+
+## Agent Directives
+
+For autonomous AI coding agents collaborating on this repository, please consult [AGENTS.md](AGENTS.md) for mandatory architectural constraints, Void Linux / runit conventions, port assignments, and testing protocols.
