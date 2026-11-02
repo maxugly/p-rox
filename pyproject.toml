@@ -3,11 +3,37 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "proxy-collector"
+name = "p-rox"
 version = "0.1.0"
-description = "High-performance proxy collector, fetcher, normalizer and deduplicator"
+description = "High-performance proxy acquisition, normalization, deduplication, and staged qualification engine"
 readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "maxugly", email = "milburn.james.87@proton.me" }
+]
 requires-python = ">=3.10"
+keywords = [
+    "proxy",
+    "proxy-pool",
+    "proxy-rotator",
+    "crawler",
+    "scraper",
+    "networking",
+    "socks5",
+    "resilience",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "requests>=2.31.0",
     "urllib3>=2.0.0",
@@ -21,6 +47,7 @@ dev = [
 ]
 
 [project.scripts]
+p-rox = "proxy_collector.cli:main"
 proxy-collector = "proxy_collector.cli:main"
 
 [tool.setuptools.packages.find]

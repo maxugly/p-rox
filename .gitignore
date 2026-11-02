@@ -1,9 +1,28 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+
+# Packaging / Distribution
 *.egg-info/
 dist/
 build/
+*.egg
+
+# Testing & Coverage
 .pytest_cache/
+.coverage
+htmlcov/
+
+# Environments
 .venv/
+env/
+venv/
 .crush/
+
+# Raw proxy downloads & bulk dumps (>80MB)
+all_proxies.txt
+sources/
+*.tmp
+*.tmp.*

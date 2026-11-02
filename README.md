@@ -1,6 +1,11 @@
-# proxyCollector
+# p-rox
 
-A high-performance Python module and CLI suite for large-scale proxy acquisition, streaming normalization, deduplication, and staged health qualification.
+[![CI](https://github.com/maxugly/p-rox/actions/workflows/ci.yml/badge.svg)](https://github.com/maxugly/p-rox/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Code style: standard](https://img.shields.io/badge/code%20style-pep8-brightgreen.svg)](https://peps.python.org/pep-0008/)
+
+A high-performance Python engine and CLI suite for large-scale proxy acquisition, streaming normalization, deduplication, and staged health qualification.
 
 Built to transform millions of unreliable public proxy listings into a verified, high-throughput rotation pool ready for production scrapers, downloaders, and distributed networking clients.
 
@@ -33,7 +38,7 @@ flowchart TD
 
 ## Part 1: Acquisition, Normalization & Deduplication
 
-Public proxy lists are notoriously noisy: mixed schemes, dead links, inconsistent formats, duplicate entries across aggregators, and malformed HTML tags. `proxyCollector` ingests, standardizes, and deduplicates this firehose in seconds.
+Public proxy lists are notoriously noisy: mixed schemes, dead links, inconsistent formats, duplicate entries across aggregators, and malformed HTML tags. `p-rox` ingests, standardizes, and deduplicates this firehose in seconds.
 
 ### 1. Concurrent Streaming Fetcher
 - **Parallel Retrieval**: Multi-threaded worker pool (`ThreadPoolExecutor`) downloading up to 52 feeds simultaneously.
@@ -188,33 +193,35 @@ pip install -e ".[socks]"
 
 ### CLI Reference
 
+Both `p-rox` and `proxy-collector` can be used interchangeably:
+
 #### 1. Inspect Cache and Feed Catalog
 ```bash
-proxy-collector stats
+p-rox stats
 ```
 
 #### 2. Fetch and Update Upstream Feeds
 ```bash
 # Uses cached feeds if fresh (<24h TTL)
-proxy-collector fetch
+p-rox fetch
 
 # Force re-download all 52 feeds in parallel
-proxy-collector fetch --force --concurrency 12
+p-rox fetch --force --concurrency 12
 ```
 
 #### 3. Collect, Deduplicate, and Filter Proxies
 ```bash
 # Collect and deduplicate all proxies (web + tunnels)
-proxy-collector collect -o all_proxies.txt
+p-rox collect -o all_proxies.txt
 
 # Collect only standard web proxies (HTTP, HTTPS, SOCKS4, SOCKS5)
-proxy-collector collect -o web_proxies.txt --web-only
+p-rox collect -o web_proxies.txt --web-only
 
 # Filter specific protocols
-proxy-collector collect -o socks_proxies.txt --protocol socks4,socks5
+p-rox collect -o socks_proxies.txt --protocol socks4,socks5
 
 # Refresh feeds from the internet before collecting
-proxy-collector collect -o all_proxies.txt --fetch
+p-rox collect -o all_proxies.txt --fetch
 ```
 
 ---
