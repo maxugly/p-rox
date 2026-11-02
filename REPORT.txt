@@ -1,0 +1,172 @@
+# Proxy List Sources - Test Report
+
+Date: 2026-11-02
+Task: verify which of the listed sites actually return proxy lists (any protocol),
+and collect every entry into one text file.
+
+Deliverables in this directory
+------------------------------
+  lists.json        machine-readable source registry: verdict, working feed URLs,
+                    cached filename, line format, entry count per feed
+  all_proxies.txt   2,203,284 unique entries, one per line (87 MB)
+  collect.py        parser that turns sources/* into all_proxies.txt (rerunnable)
+  sources/          63 raw downloads, verbatim from upstream
+
+============================================================================
+1. PER-SOURCE VERDICTS
+============================================================================
+
+Proxifly                                   WORKS
+  github: https://github.com/proxifly/free-proxy-list
+  Delivered over jsdelivr CDN. Lines already carry a scheme: `socks5://ip:port`.
+  The "all" file (10,916 entries) is the union of the per-protocol files.
+  Feeds:
+    https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/all/data.txt
+    https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/http/data.txt
+    https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/https/data.txt
+    https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks4/data.txt
+    https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt
+  Also exists per country: proxies/countries/<cc>/data.txt, and csv/json variants.
+  Claim in prompt ("11,000+ proxies across 142 countries, every 5 min") checks out.
+
+ProxyScrape                                WORKS, BUT THE PROMPT URL IS DEAD
+  github: https://github.com/proxyscrape/free-proxy-list
+  The advertised raw URL  .../master/combined/proxylist.txt  returns 404.
+  Actual layout: default branch `main`, path `proxies/{all,protocols}/<proto>/data.{txt,json,csv}`.
+  Same scheme-prefixed format as Proxifly (`socks5://ip:port`).
+  Feeds:
+    https://raw.githubusercontent.com/ProxyScrape/free-proxy-list/main/proxies/all/data.txt        4,101
+    .../proxies/protocols/http/data.txt                                                           1,401
+    .../proxies/protocols/https/data.txt                                                            314
+    .../proxies/protocols/socks4/data.txt                                                           244
+    .../proxies/protocols/socks5/data.txt                                                         2,739
+  Note: repo also mirrors per-country lists under proxies/countries/<cc>/.
+  Total is ~4k, not the huge firehose the "refreshed every minute" claim implies.
+
+zloi-user/hideip.me                        WORKS
+  github: https://github.com/zloi-user/hideip.me
+  Format: `ip:port:Country` (3 colon-separated fields, trailing comma-space in
+  country names, e.g. `8.219.97.248:80:Singapore`).
+  Files sit at repo root on branch `main`:
+    http.txt 359 | https.txt 911 | socks4.txt 58 | socks5.txt 244 | connect.txt 2,572
+  Raw pattern:
+    https://raw.githubusercontent.com/zloi-user/hideip.me/main/<proto>.txt
+
+TheSpeedX (PROXY-List / SOCKS-List)        WORKS
+  github: https://github.com/TheSpeedX/PROXY-List
+  Plain `ip:port`, one per line, no scheme, no metadata. Branch `master`.
+  GOTCHA: PROXY-List/master/http.txt and SOCKS-List/master/http.txt are byte-identical
+  (same 2,933 entries). Do not fetch both expecting different data.
+    http.txt 2,933 | socks4.txt 2,331 | socks5.txt 3,340
+
+monosans/proxy-list                        WORKS (best metadata)
+  github: https://github.com/monosans/proxy-list
+  `proxies.json` is ONE JSON ARRAY, not newline-delimited:
+    [{"protocol":"http","username":null,"password":null,"host":"89.111.153.21",
+      "port":3128,"timeout":0.19,"exit_ip":"...","asn":{...},"geolocation":{...}}, ...]
+  3,103 entries, sorted by speed, includes auth credentials and geo/ASN.
+  TXT equivalents (plain `ip:port`, branch `main`):
+    proxies/http.txt 1,106 | proxies/socks4.txt 321 | proxies/socks5.txt 1,675
+  proxies/https.txt does NOT exist (404) - HTTPS proxies only appear inside proxies.json.
+  Also: network/ folder with ASN/ country splits, and a `geolocation.json`.
+
+jetkai/proxy-list                          WORKS
+  github: https://github.com/jetkai/proxy-list
+  Rich format support under online-proxies/: txt, json, csv, xml, yaml
+  (plus basic/advanced variants, and archive/ = old snapshots, huge: 90 MB XML).
+  `online-proxies/json/proxies.json` is an OBJECT keyed by protocol, values are
+  bare strings, not objects:
+    {"http":["1.0.205.87:8080",...],"https":[...],"socks4":[...],"socks5":[...]}
+  counts: http 1,721 / https 2,086 / socks4 1,572 / socks5 347 (json)
+  TXT per protocol: proxies-http.txt 1,801, proxies-https.txt 2,161,
+                    proxies-socks4.txt 1,603, proxies-socks5.txt 405
+  GOTCHA: online-proxies/txt/proxies.txt (4,232) is protocol-less `ip:port` - useless
+  for a multi-protocol collector, prefer the JSON or per-protocol txt files.
+  proxies-advanced.json adds geo/provider metadata; proxies-basic.json is lighter.
+
+vakhov/fresh-proxy-list                    WORKS BUT STALE
+  github: https://github.com/vakhov/fresh-proxy-list
+  Default branch is `master` (not `main`). Formats: txt, csv, json, xml, phps + per-proto txt.
+  proxylist.json is an array of objects WITHOUT a protocol field; the protocol is
+  expressed as flags:
+    {"host":"ip72-195-101-99...cox.net","ip":"72.195.101.99","port":"4145",
+     "country_code":"US","checks_up":"3512","checks_down":"498",
+     "anon":"4","http":"0","ssl":"0","socks4":"1","socks5":"0"}
+  GOTCHAS: `port` is a string; `host` is often a reverse-DNS name (use `ip`);
+  `lastseen` values are in the tens of thousands (list has not been re-verified
+  recently) and the repo has not been updated since the workflow stopped.
+  Counts: proxylist.txt 722 | http 528 | https 6 | socks4 168 | socks5 21
+  Value today: low. Keep as a cheap extra, not a primary source.
+
+gfpcom/free-proxy-list                     WORKS, DATA IS NOT IN THE REPO
+  github: https://github.com/gfpcom/free-proxy-list
+  IMPORTANT: the repo's `sources/*.txt` files are UPSTREAM FEED URLS, not proxies
+  (they list other repos' raw URLs, some with a `,base64,` or `,mtproto` tag
+  appended). Parsing them as proxies yields garbage.
+  The generated output lives in the repo WIKI, reachable over the raw endpoint:
+    https://raw.githubusercontent.com/wiki/gfpcom/free-proxy-list/lists/<PROTO>.txt
+  Counts observed 2026-11-02 (total advertised: 2,202,985):
+    http 551,580 | https 503,541 | socks4 489,088 | socks5 505,829 | vless 94,085
+    trojan 24,329 | vmess 14,656 | ss 13,965 | tg 2,666 | hy2 2,463 | ssr 302
+    tuic 261 | wireguard 94 | anytls 19 | hy 68 | less 1 | socks 38
+  Format: scheme-prefixed URIs, e.g. `socks5://ip:port`,
+  `vless://<uuid>@host:443?path=%2F...&security=tls#Name`,
+  `tg://proxy?port=443&secret=ee...&server=host`,
+  `wireguard://<pubkey>@host:port`. Lines may carry a URL-encoded `#Name` fragment.
+  This is by far the largest source (it aggregates hundreds of feeds, including
+  several of the other repos in this report), and drives the total count.
+
+roosterkid/openproxylist                   WORKS, VERY SMALL
+  github: https://github.com/roosterkid/openproxylist
+  Branch `main`, files at repo root. Two flavours per protocol:
+    SOCKS4_RAW.txt / HTTPS_RAW.txt  -> plain `ip:port`
+    SOCKS4.txt / HTTPS.txt          -> `ip:port` + country/anonymity suffixes
+  Also V2RAY.txt / V2RAY_RAW.txt / V2RAY_BASE64.txt (vmess:// URIs, base64 variant).
+  Counts: HTTPS_RAW 150 | SOCKS4_RAW 150 | SOCKS5_RAW 9
+  GOTCHA: SOCKS5 list is effectively empty; "hourly updates" produce almost nothing.
+  Advertised URL from the prompt for its repo needs the `_RAW` suffix for clean data.
+
+============================================================================
+2. OUTPUT FILE: all_proxies.txt
+============================================================================
+  2,203,284 unique lines from 2,268,826 parsed entries (65,542 duplicates dropped).
+  One entry per line. Two shapes, on purpose:
+    <scheme>://<host>:<port>            for tcp proxies (http/https/socks4/socks5)
+    <scheme>://<params>@<host>:<port>   for tunnel URIs (vless/vmess/trojan/ss/ssr/
+                                         tg/hy2/tuic/wireguard) - kept verbatim,
+                                         including any #fragment
+  Entries carrying credentials appear as `scheme://user:pass@host:port`
+  (135,830 lines contain `@`).
+  Sorted by scheme, then host.
+
+  Protocol totals:
+    http        551,662      vless      94,082      tg        2,666
+    socks5      506,134      trojan     24,325      hy2       2,463
+    https       503,583      vmess      14,656      ssr         302
+    socks4      489,091      ss         13,965      tuic        261
+                                           wireguard    94
+
+  Overlap warning: gfpcom already aggregates TheSpeedX, Proxifly, roosterkid and
+  others, so the "unique" number is only unique by string, not by owner/operator.
+  If you want independence-per-source, weight sources rather than counting lines.
+
+============================================================================
+3. NOTES FOR THE AUTOMATION AGENT
+============================================================================
+  - Branch names differ: `main` for ProxyScrape, hideip.me, monosans, jetkai,
+    gfpcom, roosterkid; `master` for TheSpeedX and vakhov. Do not hardcode one.
+  - Prefer the JSON feeds (monosans proxies.json, jetkai proxies.json,
+    vakhov proxylist.json, ProxyScrape data.json) - they carry protocol + auth +
+    geo, which the TXT feeds do not.
+  - Protocol-less TXT (jetkai proxies.txt, vakhov proxylist.txt) cannot be merged
+    safely into a labelled corpus; skip them or join against the JSON.
+  - Fetch via the raw.githubusercontent.com / cdn.jsdelivr.net endpoints only;
+    HTML pages and the /blob/ URLs return markup.
+  - gfpcom wiki lists are individually multi-MB (vless.txt was 22 MB). Fetch in
+    parallel with a streaming write and expect ~90 MB total per run.
+  - Dedup key: normalize scheme to lowercase, host to lowercase, keep port. Do
+    NOT dedupe tunnel URIs by host:port alone - the credentials/uuid are the point.
+  - Keep per-source counts in the run log; a source that drops to zero is how you
+    detect an upstream layout change (that is exactly how the dead ProxyScrape
+    URL in the original prompt was found).
+  - Re-run: refresh sources/ with the URLs in lists.json, then `python3 collect.py`.

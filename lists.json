@@ -1,0 +1,410 @@
+{
+  "generated": "2026-11-02",
+  "output": "all_proxies.txt",
+  "sources_dir": "sources/",
+  "sources": [
+    {
+      "name": "Proxifly",
+      "github": "https://github.com/proxifly/free-proxy-list",
+      "status": "works",
+      "note": "jsdelivr CDN mirror returns proxy lists with scheme prefixes (socks5://, http://)",
+      "feeds": [
+        {
+          "url": "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/all/data.txt",
+          "cached_as": "proxifly_all.txt",
+          "format": "scheme://host:port",
+          "entries": 10916
+        },
+        {
+          "url": "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt",
+          "cached_as": "proxifly_socks5.txt",
+          "format": "socks5://host:port",
+          "entries": 4928
+        },
+        {
+          "url": "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/http/data.txt",
+          "cached_as": "proxifly_http.txt",
+          "format": "http://host:port",
+          "entries": 4635
+        },
+        {
+          "url": "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/https/data.txt",
+          "cached_as": "proxifly_https.txt",
+          "format": "https://host:port",
+          "entries": 914
+        },
+        {
+          "url": "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks4/data.txt",
+          "cached_as": "proxifly_socks4.txt",
+          "format": "socks4://host:port",
+          "entries": 439
+        }
+      ]
+    },
+    {
+      "name": "ProxyScrape",
+      "github": "https://github.com/proxyscrape/free-proxy-list",
+      "status": "works (URL in prompt is wrong)",
+      "note": "prompt URL .../master/combined/proxylist.txt returns 404. Real layout is branch main, proxies/<protocol>/data.(txt|json|csv)",
+      "feeds": [
+        {
+          "url": "https://raw.githubusercontent.com/ProxyScrape/free-proxy-list/main/proxies/all/data.txt",
+          "cached_as": "proxyscrape_all.txt",
+          "format": "scheme://host:port",
+          "entries": 4101
+        },
+        {
+          "url": "https://raw.githubusercontent.com/ProxyScrape/free-proxy-list/main/proxies/protocols/socks5/data.txt",
+          "cached_as": "proxyscrape_socks5.txt",
+          "format": "socks5://host:port",
+          "entries": 2739
+        },
+        {
+          "url": "https://raw.githubusercontent.com/ProxyScrape/free-proxy-list/main/proxies/protocols/http/data.txt",
+          "cached_as": "proxyscrape_http.txt",
+          "format": "http://host:port",
+          "entries": 1401
+        },
+        {
+          "url": "https://raw.githubusercontent.com/ProxyScrape/free-proxy-list/main/proxies/protocols/https/data.txt",
+          "cached_as": "proxyscrape_https.txt",
+          "format": "https://host:port",
+          "entries": 314
+        },
+        {
+          "url": "https://raw.githubusercontent.com/ProxyScrape/free-proxy-list/main/proxies/protocols/socks4/data.txt",
+          "cached_as": "proxyscrape_socks4.txt",
+          "format": "socks4://host:port",
+          "entries": 244
+        }
+      ]
+    },
+    {
+      "name": "zloi-user/hideip.me",
+      "github": "https://github.com/zloi-user/hideip.me",
+      "status": "works",
+      "note": "host:port:Country format, one file per protocol at repo root",
+      "feeds": [
+        {
+          "url": "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt",
+          "cached_as": "hideip_http.txt",
+          "format": "host:port:Country",
+          "entries": 359
+        },
+        {
+          "url": "https://raw.githubusercontent.com/zloi-user/hideip.me/main/https.txt",
+          "cached_as": "hideip_https.txt",
+          "format": "host:port:Country",
+          "entries": 911
+        },
+        {
+          "url": "https://raw.githubusercontent.com/zloi-user/hideip.me/main/socks4.txt",
+          "cached_as": "hideip_socks4.txt",
+          "format": "host:port:Country",
+          "entries": 58
+        },
+        {
+          "url": "https://raw.githubusercontent.com/zloi-user/hideip.me/main/socks5.txt",
+          "cached_as": "hideip_socks5.txt",
+          "format": "host:port:Country",
+          "entries": 244
+        },
+        {
+          "url": "https://raw.githubusercontent.com/zloi-user/hideip.me/main/connect.txt",
+          "cached_as": "hideip_connect.txt",
+          "format": "host:port:Country",
+          "entries": 2572
+        }
+      ]
+    },
+    {
+      "name": "TheSpeedX/PROXY-List",
+      "github": "https://github.com/TheSpeedX/PROXY-List",
+      "status": "works",
+      "note": "plain host:port; PROXY-List/http.txt and SOCKS-List/http.txt are identical files",
+      "feeds": [
+        {
+          "url": "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
+          "cached_as": "thespeedx_http.txt",
+          "format": "host:port",
+          "entries": 2933
+        },
+        {
+          "url": "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+          "cached_as": "thespeedx_https.txt",
+          "format": "host:port",
+          "entries": 2933
+        },
+        {
+          "url": "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks4.txt",
+          "cached_as": "thespeedx_socks4.txt",
+          "format": "host:port",
+          "entries": 2331
+        },
+        {
+          "url": "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
+          "cached_as": "thespeedx_socks5.txt",
+          "format": "host:port",
+          "entries": 3340
+        }
+      ]
+    },
+    {
+      "name": "monosans/proxy-list",
+      "github": "https://github.com/monosans/proxy-list",
+      "status": "works",
+      "note": "proxies.json is one big JSON array with protocol, host, port, username, password, timeout, ASN and geolocation. No proxies/https.txt (404).",
+      "feeds": [
+        {
+          "url": "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies.json",
+          "cached_as": "monosans_proxies.json",
+          "format": "json array",
+          "entries": 3103
+        },
+        {
+          "url": "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+          "cached_as": "monosans_http.txt",
+          "format": "host:port",
+          "entries": 1106
+        },
+        {
+          "url": "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt",
+          "cached_as": "monosans_socks4.txt",
+          "format": "host:port",
+          "entries": 321
+        },
+        {
+          "url": "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
+          "cached_as": "monosans_socks5.txt",
+          "format": "host:port",
+          "entries": 1675
+        }
+      ]
+    },
+    {
+      "name": "jetkai/proxy-list",
+      "github": "https://github.com/jetkai/proxy-list",
+      "status": "works",
+      "note": "online-proxies/{txt,json,csv,xml,yaml} plus archive/ of older snapshots",
+      "feeds": [
+        {
+          "url": "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/json/proxies.json",
+          "cached_as": "jetkai_proxies.json",
+          "format": "json object keyed by protocol",
+          "entries": 5726
+        },
+        {
+          "url": "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
+          "cached_as": "jetkai_http.txt",
+          "format": "host:port",
+          "entries": 1801
+        },
+        {
+          "url": "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-https.txt",
+          "cached_as": "jetkai_https.txt",
+          "format": "host:port",
+          "entries": 2161
+        },
+        {
+          "url": "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks4.txt",
+          "cached_as": "jetkai_socks4.txt",
+          "format": "host:port",
+          "entries": 1603
+        },
+        {
+          "url": "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt",
+          "cached_as": "jetkai_socks5.txt",
+          "format": "host:port",
+          "entries": 405
+        },
+        {
+          "url": "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies.txt",
+          "cached_as": "jetkai_all.txt",
+          "format": "host:port (no protocol marker, skipped)",
+          "entries": 4232
+        }
+      ]
+    },
+    {
+      "name": "vakhov/fresh-proxy-list",
+      "github": "https://github.com/vakhov/fresh-proxy-list",
+      "status": "stale",
+      "note": "Default branch is master (not main). Returns valid lists but last commit/uptime data looks old (lastseen values in the tens of thousands of minutes).",
+      "feeds": [
+        {
+          "url": "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/proxylist.txt",
+          "cached_as": "vakhov_all.txt",
+          "format": "host:port",
+          "entries": 722
+        },
+        {
+          "url": "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/proxylist.json",
+          "cached_as": "vakhov_proxylist.json",
+          "format": "json array with http/ssl/socks4/socks5 flags",
+          "entries": 722
+        },
+        {
+          "url": "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/http.txt",
+          "cached_as": "vakhov_http.txt",
+          "format": "host:port",
+          "entries": 528
+        },
+        {
+          "url": "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/https.txt",
+          "cached_as": "vakhov_https.txt",
+          "format": "host:port",
+          "entries": 6
+        },
+        {
+          "url": "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/socks4.txt",
+          "cached_as": "vakhov_socks4.txt",
+          "format": "host:port",
+          "entries": 168
+        },
+        {
+          "url": "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/socks5.txt",
+          "cached_as": "vakhov_socks5.txt",
+          "format": "host:port",
+          "entries": 21
+        }
+      ]
+    },
+    {
+      "name": "gfpcom/free-proxy-list",
+      "github": "https://github.com/gfpcom/free-proxy-list",
+      "status": "works (data is in the wiki, not the repo)",
+      "note": "sources/*.txt in the repo are upstream feed URLs, NOT proxies. The generated lists live at raw.githubusercontent.com/wiki/gfpcom/free-proxy-list/lists/<PROTO>.txt and cover HTTP, HTTPS, SOCKS4/5, SS, SSR, VLESS, VMESS, TROJAN, TG (mtproto), HY2, TUIC, WIREGUARD, ANYTLS. Largest source by far.",
+      "feeds": [
+        {
+          "url": "https://raw.githubusercontent.com/wiki/gfpcom/free-proxy-list/lists/http.txt",
+          "cached_as": "gfp_http.txt",
+          "format": "scheme://host:port",
+          "entries": 551580
+        },
+        {
+          "url": "https://raw.githubusercontent.com/wiki/gfpcom/free-proxy-list/lists/https.txt",
+          "cached_as": "gfp_https.txt",
+          "format": "https://host:port",
+          "entries": 503541
+        },
+        {
+          "url": "https://raw.githubusercontent.com/wiki/gfpcom/free-proxy-list/lists/socks4.txt",
+          "cached_as": "gfp_socks4.txt",
+          "format": "socks4://host:port",
+          "entries": 489088
+        },
+        {
+          "url": "https://raw.githubusercontent.com/wiki/gfpcom/free-proxy-list/lists/socks5.txt",
+          "cached_as": "gfp_socks5.txt",
+          "format": "socks5://host:port",
+          "entries": 505829
+        },
+        {
+          "url": "https://raw.githubusercontent.com/wiki/gfpcom/free-proxy-list/lists/vless.txt",
+          "cached_as": "gfp_vless.txt",
+          "format": "vless:// URI",
+          "entries": 94085
+        },
+        {
+          "url": "https://raw.githubusercontent.com/wiki/gfpcom/free-proxy-list/lists/vmess.txt",
+          "cached_as": "gfp_vmess.txt",
+          "format": "vmess:// URI",
+          "entries": 14656
+        },
+        {
+          "url": "https://raw.githubusercontent.com/wiki/gfpcom/free-proxy-list/lists/trojan.txt",
+          "cached_as": "gfp_trojan.txt",
+          "format": "trojan:// URI",
+          "entries": 24329
+        },
+        {
+          "url": "https://raw.githubusercontent.com/wiki/gfpcom/free-proxy-list/lists/ss.txt",
+          "cached_as": "gfp_ss.txt",
+          "format": "ss:// URI",
+          "entries": 13965
+        },
+        {
+          "url": "https://raw.githubusercontent.com/wiki/gfpcom/free-proxy-list/lists/ssr.txt",
+          "cached_as": "gfp_ssr.txt",
+          "format": "ssr:// URI",
+          "entries": 302
+        },
+        {
+          "url": "https://raw.githubusercontent.com/wiki/gfpcom/free-proxy-list/lists/tg.txt",
+          "cached_as": "gfp_tg.txt",
+          "format": "tg://proxy?... mtproto URI",
+          "entries": 2666
+        },
+        {
+          "url": "https://raw.githubusercontent.com/wiki/gfpcom/free-proxy-list/lists/hy2.txt",
+          "cached_as": "gfp_hy2.txt",
+          "format": "hy2:// URI",
+          "entries": 2463
+        },
+        {
+          "url": "https://raw.githubusercontent.com/wiki/gfpcom/free-proxy-list/lists/tuic.txt",
+          "cached_as": "gfp_tuic.txt",
+          "format": "tuic:// URI",
+          "entries": 261
+        },
+        {
+          "url": "https://raw.githubusercontent.com/wiki/gfpcom/free-proxy-list/lists/wireguard.txt",
+          "cached_as": "gfp_wireguard.txt",
+          "format": "wireguard:// URI",
+          "entries": 94
+        }
+      ]
+    },
+    {
+      "name": "roosterkid/openproxylist",
+      "github": "https://github.com/roosterkid/openproxylist",
+      "status": "works",
+      "note": "_RAW.txt files are plain host:port; the non-RAW files carry Country/Anonymity suffixes. SOCKS5 list is nearly empty.",
+      "feeds": [
+        {
+          "url": "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
+          "cached_as": "roosterkid_https.txt",
+          "format": "host:port",
+          "entries": 150
+        },
+        {
+          "url": "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS4_RAW.txt",
+          "cached_as": "roosterkid_socks4.txt",
+          "format": "host:port",
+          "entries": 150
+        },
+        {
+          "url": "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt",
+          "cached_as": "roosterkid_socks5.txt",
+          "format": "host:port",
+          "entries": 9
+        },
+        {
+          "url": "https://raw.githubusercontent.com/roosterkid/openproxylist/main/V2RAY_RAW.txt",
+          "cached_as": "(not cached separately; same content gfpcom already aggregates)",
+          "format": "vmess:// URI",
+          "entries": null
+        }
+      ]
+    }
+  ],
+  "result": {
+    "total_lines_parsed": 2268826,
+    "unique_entries": 2203284,
+    "by_protocol": {
+      "http": 551662,
+      "https": 503583,
+      "socks4": 489091,
+      "socks5": 506134,
+      "vless": 94082,
+      "trojan": 24325,
+      "vmess": 14656,
+      "ss": 13965,
+      "tg": 2666,
+      "hy2": 2463,
+      "ssr": 302,
+      "tuic": 261,
+      "wireguard": 94
+    }
+  }
+}

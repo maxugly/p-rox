@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "proxy-collector"
+version = "0.1.0"
+description = "High-performance proxy collector, fetcher, normalizer and deduplicator"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31.0",
+    "urllib3>=2.0.0",
+]
+
+[project.optional-dependencies]
+socks = ["PySocks>=1.7.1"]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-mock",
+]
+
+[project.scripts]
+proxy-collector = "proxy_collector.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
