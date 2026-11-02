@@ -466,7 +466,7 @@ class GatewayServer:
     def __init__(
         self,
         slots_count: int = 10,
-        base_port: int = 8000,
+        base_port: int = 3030,
         host: str = "127.0.0.1",
         pool: Optional[ProxyPool] = None,
         target_site: Optional[str] = None,

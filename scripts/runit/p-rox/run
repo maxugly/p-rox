@@ -13,5 +13,5 @@ export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
 # VENV="/home/m/snc/cod/proxyCollector/.venv"
 # export PATH="$VENV/bin:$PATH"
 
-# Run p-rox gateway in foreground with 10 slots on ports 8000..8009
-exec p-rox gateway --slots 10 --base-port 8000 --host 0.0.0.0
+# Run p-rox gateway in foreground with 10 slots on ports 3030..3039
+exec p-rox gateway --slots 10 --base-port 3030 --host 0.0.0.0

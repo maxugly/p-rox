@@ -317,7 +317,7 @@ def main():
     # gateway command
     p_gateway = subparsers.add_parser("gateway", help="Run local forward proxy gateway exposing static slots")
     p_gateway.add_argument("--slots", type=int, default=10, help="Number of static port slots to maintain (default: 10)")
-    p_gateway.add_argument("--base-port", type=int, default=8000, help="Starting port number (default: 8000)")
+    p_gateway.add_argument("--base-port", type=int, default=3030, help="Starting port number (default: 3030)")
     p_gateway.add_argument("--host", type=str, default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1, use 0.0.0.0 for LAN)")
     p_gateway.add_argument("--site", type=str, default=None, help="Optional target site for L2 qualification")
     p_gateway.add_argument("--cache-dir", type=str, default=None, help="Cache directory")

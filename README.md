@@ -240,14 +240,14 @@ p-rox daemon --site https://example.com/ --route-workers 8 --site-workers 8
 Exposes fixed local ports mapped to pre-qualified, auto-healing upstream proxies:
 
 ```bash
-# 1. Interactive mode with live dashboard (slots on ports 8000..8009)
-p-rox gateway --slots 10 --base-port 8000
+# 1. Interactive mode with live dashboard (slots on ports 3030..3039)
+p-rox gateway --slots 10
 
 # 2. Bind to 0.0.0.0 for access across home LAN / server
-p-rox gateway --host 0.0.0.0 --slots 10 --base-port 8000
+p-rox gateway --host 0.0.0.0 --slots 10 --base-port 3030
 
 # 3. Background daemon mode
-p-rox gateway --slots 10 --base-port 8000 --daemon
+p-rox gateway --slots 10 --daemon
 p-rox gateway --status      # View live slot status
 p-rox gateway --stop        # Stop background daemon
 
@@ -259,9 +259,9 @@ sudo ln -s /etc/sv/p-rox /var/service/
 Use from **any tool or language** without SDK code changes:
 ```bash
 # Slot 0
-curl -x http://127.0.0.1:8000 https://ifconfig.me
+curl -x http://127.0.0.1:3030 https://ifconfig.me
 # Slot 1
-curl -x http://127.0.0.1:8001 https://ifconfig.me
+curl -x http://127.0.0.1:3031 https://ifconfig.me
 ```
 
 ---
@@ -385,10 +385,10 @@ from proxy_collector import GatewayServer, ProxyPool
 pool = ProxyPool()
 
 async def run_gateway():
-    # Maintain 10 static local ports (8000..8009) auto-mapped to healthy proxies
+    # Maintain 10 static local ports (3030..3039) auto-mapped to healthy proxies
     server = GatewayServer(
         slots_count=10,
-        base_port=8000,
+        base_port=3030,
         host="127.0.0.1",
         pool=pool,
     )
@@ -398,11 +398,4 @@ async def run_gateway():
     await server.stop()
 
 asyncio.run(run_gateway())
-```
-added = collector.ingest_into_pool(
-    pool,
-    limit=5000,
-    protocols={"http", "https", "socks5"},
-)
-print(f"Ingested {added} fresh, deduplicated proxies into pool.")
 ```

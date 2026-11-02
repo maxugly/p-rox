@@ -143,3 +143,10 @@ def test_gateway_tunnel_http_connect(tmp_path):
         await target_server.wait_closed()
 
     asyncio.run(_test())
+
+
+def test_gateway_default_port(tmp_path):
+    server = GatewayServer(cache_dir=tmp_path)
+    assert server.base_port == 3030
+    assert server.slots_count == 10
+
