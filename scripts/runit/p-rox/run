@@ -1,0 +1,17 @@
+#!/bin/sh
+# runit service script for Void Linux (and other runit-based systems)
+# Install to: /etc/sv/p-rox/run (chmod +x)
+# Enable with: ln -s /etc/sv/p-rox /var/service/
+
+exec 2>&1
+
+# Default environment & working directory
+export HOME="${HOME:-/root}"
+export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+
+# If running inside a virtualenv, uncomment and adjust:
+# VENV="/home/m/snc/cod/proxyCollector/.venv"
+# export PATH="$VENV/bin:$PATH"
+
+# Run p-rox gateway in foreground with 10 slots on ports 8000..8009
+exec p-rox gateway --slots 10 --base-port 8000 --host 0.0.0.0

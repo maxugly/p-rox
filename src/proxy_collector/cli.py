@@ -158,6 +158,98 @@ def cmd_update_pool(args):
     print(json.dumps(res, indent=2))
 
 
+def cmd_gateway(args):
+    """Run local forward proxy gateway exposing static ports mapped to hot pool proxies."""
+    import asyncio
+    from .gateway import GatewayServer
+    from .pool import DEFAULT_CACHE_DIR
+
+    cache_p = Path(args.cache_dir or DEFAULT_CACHE_DIR).expanduser().resolve()
+    cache_p.mkdir(parents=True, exist_ok=True)
+    status_file = cache_p / "gateway_status.json"
+    pid_file = cache_p / "gateway.pid"
+
+    if args.status:
+        if status_file.is_file():
+            print(status_file.read_text(encoding="utf-8"))
+        else:
+            print(json.dumps({"status": "stopped", "message": "No gateway is currently running"}))
+        return
+
+    if args.stop:
+        if pid_file.is_file():
+            try:
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+                print(f"Sent SIGTERM to gateway process {pid}")
+                pid_file.unlink(missing_ok=True)
+            except Exception as e:
+                print(f"Error stopping gateway: {e}")
+        else:
+            print("No running gateway PID file found.")
+        return
+
+    if args.gen_runit:
+        target_path = Path(args.gen_runit)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        script = (
+            "#!/bin/sh\n"
+            "exec 2>&1\n"
+            f"exec p-rox gateway --slots {args.slots} --base-port {args.base_port} --host {args.host}\n"
+        )
+        target_path.write_text(script, encoding="utf-8")
+        target_path.chmod(0o755)
+        print(f"Generated executable runit service script at {target_path}")
+        return
+
+    if args.daemon:
+        if hasattr(os, "fork"):
+            pid = os.fork()
+            if pid > 0:
+                print(f"p-rox gateway daemon started in background (PID: {pid})")
+                print(f"Listening on {args.host}:{args.base_port}..{args.base_port + args.slots - 1}")
+                print(f"To query status: p-rox gateway --status")
+                print(f"To stop:         p-rox gateway --stop")
+                sys.exit(0)
+            os.setsid()
+            pid_file.write_text(str(os.getpid()))
+
+    server = GatewayServer(
+        slots_count=args.slots,
+        base_port=args.base_port,
+        host=args.host,
+        target_site=args.site,
+        cache_dir=cache_p,
+    )
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    stop_event = asyncio.Event()
+
+    def signal_handler():
+        stop_event.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, signal_handler)
+        except (NotImplementedError, RuntimeError):
+            pass
+
+    async def run_server():
+        await server.start(interactive=not args.daemon)
+        await stop_event.wait()
+        await server.stop()
+
+    try:
+        loop.run_until_complete(run_server())
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
+        pid_file.unlink(missing_ok=True)
+        loop.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="p-rox: High-performance proxy acquisition, qualification, and routing engine")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
@@ -221,6 +313,19 @@ def main():
     p_update.add_argument("--site", type=str, default=None, help="Target site")
     p_update.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
     p_update.set_defaults(func=cmd_update_pool)
+
+    # gateway command
+    p_gateway = subparsers.add_parser("gateway", help="Run local forward proxy gateway exposing static slots")
+    p_gateway.add_argument("--slots", type=int, default=10, help="Number of static port slots to maintain (default: 10)")
+    p_gateway.add_argument("--base-port", type=int, default=8000, help="Starting port number (default: 8000)")
+    p_gateway.add_argument("--host", type=str, default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1, use 0.0.0.0 for LAN)")
+    p_gateway.add_argument("--site", type=str, default=None, help="Optional target site for L2 qualification")
+    p_gateway.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
+    p_gateway.add_argument("--daemon", action="store_true", help="Run as background daemon process")
+    p_gateway.add_argument("--stop", action="store_true", help="Stop running background gateway daemon")
+    p_gateway.add_argument("--status", action="store_true", help="Query status of running gateway slots")
+    p_gateway.add_argument("--gen-runit", type=str, default=None, help="Generate a Void Linux runit service script at PATH")
+    p_gateway.set_defaults(func=cmd_gateway)
 
     args = parser.parse_args()
     setup_logging(args.verbose)

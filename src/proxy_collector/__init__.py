@@ -11,6 +11,7 @@ from .leases import ProxyLeases
 from .monitor import ProxyMonitor
 from .routing import RoutedSession
 from .service import ProxyService
+from .gateway import GatewayServer, ProxySlot, SlotStats
 
 __all__ = [
     "Proxy",
@@ -29,6 +30,9 @@ __all__ = [
     "ProxyMonitor",
     "RoutedSession",
     "ProxyService",
+    "GatewayServer",
+    "ProxySlot",
+    "SlotStats",
     "site_key",
 ]
 

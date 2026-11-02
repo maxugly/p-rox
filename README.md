@@ -236,6 +236,34 @@ p-rox status --site example.com
 p-rox daemon --site https://example.com/ --route-workers 8 --site-workers 8
 ```
 
+#### 5. Local Forward Proxy Gateway (Static Port Slots)
+Exposes fixed local ports mapped to pre-qualified, auto-healing upstream proxies:
+
+```bash
+# 1. Interactive mode with live dashboard (slots on ports 8000..8009)
+p-rox gateway --slots 10 --base-port 8000
+
+# 2. Bind to 0.0.0.0 for access across home LAN / server
+p-rox gateway --host 0.0.0.0 --slots 10 --base-port 8000
+
+# 3. Background daemon mode
+p-rox gateway --slots 10 --base-port 8000 --daemon
+p-rox gateway --status      # View live slot status
+p-rox gateway --stop        # Stop background daemon
+
+# 4. Void Linux runit service generation
+sudo p-rox gateway --gen-runit /etc/sv/p-rox/run
+sudo ln -s /etc/sv/p-rox /var/service/
+```
+
+Use from **any tool or language** without SDK code changes:
+```bash
+# Slot 0
+curl -x http://127.0.0.1:8000 https://ifconfig.me
+# Slot 1
+curl -x http://127.0.0.1:8001 https://ifconfig.me
+```
+
 ---
 
 ## Part 7: Python API Reference
@@ -346,6 +374,30 @@ monitor.start()
 # Monitor runs asynchronously in background feeding and qualifying proxies
 # To stop:
 monitor.close()
+```
+
+### 7. Programmatic Proxy Gateway (`GatewayServer`)
+
+```python
+import asyncio
+from proxy_collector import GatewayServer, ProxyPool
+
+pool = ProxyPool()
+
+async def run_gateway():
+    # Maintain 10 static local ports (8000..8009) auto-mapped to healthy proxies
+    server = GatewayServer(
+        slots_count=10,
+        base_port=8000,
+        host="127.0.0.1",
+        pool=pool,
+    )
+    await server.start(interactive=True)
+    # The server runs asynchronously handling client traffic and hot-swapping
+    await asyncio.sleep(3600)
+    await server.stop()
+
+asyncio.run(run_gateway())
 ```
 added = collector.ingest_into_pool(
     pool,
