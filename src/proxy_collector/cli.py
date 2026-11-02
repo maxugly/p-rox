@@ -1,4 +1,4 @@
-"""Command-line interface for proxy-collector."""
+"""Command-line interface for p-rox / proxy-collector."""
 
 import argparse
 import json
@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .collector import ProxyCollector
 from .models import STANDARD_SCHEMES
+from .service import ProxyService
 
 
 def setup_logging(verbose: bool = False):
@@ -78,7 +79,6 @@ def cmd_collect(args):
         collector.fetch(force=args.force)
 
     print(f"Parsing and deduplicating into {output_path}...")
-    start = time.monotonic()
 
     def progress(count):
         print(f"  ...processed {count:,} unique proxies")
@@ -119,8 +119,47 @@ def cmd_stats(args):
     print(f"Cached files: {total_files} ({total_size / 1024 / 1024:.2f} MB)")
 
 
+def cmd_probe(args):
+    """Execute staged qualification probe across pending candidate proxies."""
+    service = ProxyService(
+        cache=args.cache_dir,
+        site=args.site,
+        route_workers=args.route_workers,
+        site_workers=args.site_workers,
+    )
+    print(f"Executing staged qualification probe (limit={args.limit}, site={args.site or 'none'})...")
+    res = service.check(limit=args.limit)
+    print(json.dumps(res, indent=2))
+
+
+def cmd_daemon(args):
+    """Run foreground qualification monitor loop."""
+    service = ProxyService(
+        cache=args.cache_dir,
+        site=args.site,
+        route_workers=args.route_workers,
+        site_workers=args.site_workers,
+    )
+    print(f"Starting p-rox qualification daemon (site={args.site or 'none'})...")
+    service.daemon(interval=args.interval)
+
+
+def cmd_service_status(args):
+    """Query real-time pool metrics and qualification status."""
+    service = ProxyService(cache=args.cache_dir, site=args.site)
+    res = service.status()
+    print(json.dumps(res, indent=2))
+
+
+def cmd_update_pool(args):
+    """Ingest candidate proxies into the service pool."""
+    service = ProxyService(cache=args.cache_dir, site=args.site)
+    res = service.update(limit=args.limit)
+    print(json.dumps(res, indent=2))
+
+
 def main():
-    parser = argparse.ArgumentParser(description="High-performance proxy collector and deduplicator")
+    parser = argparse.ArgumentParser(description="p-rox: High-performance proxy acquisition, qualification, and routing engine")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -151,6 +190,37 @@ def main():
     p_stats.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
     p_stats.add_argument("--catalog", type=str, default=None, help="Path to lists.json")
     p_stats.set_defaults(func=cmd_stats)
+
+    # probe command
+    p_probe = subparsers.add_parser("probe", help="Run staged qualification probe across pending proxies")
+    p_probe.add_argument("--limit", type=int, default=200, help="Max candidates to probe")
+    p_probe.add_argument("--site", type=str, default=None, help="Target site for L2 qualification")
+    p_probe.add_argument("--route-workers", type=int, default=8, help="L1 route test workers")
+    p_probe.add_argument("--site-workers", type=int, default=8, help="L2 site test workers")
+    p_probe.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
+    p_probe.set_defaults(func=cmd_probe)
+
+    # daemon command
+    p_daemon = subparsers.add_parser("daemon", help="Run foreground qualification monitor daemon")
+    p_daemon.add_argument("--site", type=str, default=None, help="Target site for L2 qualification")
+    p_daemon.add_argument("--route-workers", type=int, default=8, help="L1 route test workers")
+    p_daemon.add_argument("--site-workers", type=int, default=8, help="L2 site test workers")
+    p_daemon.add_argument("--interval", type=float, default=2.0, help="Status publish interval")
+    p_daemon.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
+    p_daemon.set_defaults(func=cmd_daemon)
+
+    # status command
+    p_status = subparsers.add_parser("status", help="Query pool and service status")
+    p_status.add_argument("--site", type=str, default=None, help="Target site")
+    p_status.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
+    p_status.set_defaults(func=cmd_service_status)
+
+    # update-pool command
+    p_update = subparsers.add_parser("update-pool", help="Ingest proxies into service pool")
+    p_update.add_argument("--limit", type=int, default=10000, help="Max proxies to ingest")
+    p_update.add_argument("--site", type=str, default=None, help="Target site")
+    p_update.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
+    p_update.set_defaults(func=cmd_update_pool)
 
     args = parser.parse_args()
     setup_logging(args.verbose)

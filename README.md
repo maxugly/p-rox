@@ -224,11 +224,23 @@ p-rox collect -o socks_proxies.txt --protocol socks4,socks5
 p-rox collect -o all_proxies.txt --fetch
 ```
 
+#### 4. Stage Qualification & Health Probing
+```bash
+# Run batch probe across candidate proxies
+p-rox probe --limit 200 --site https://example.com/
+
+# Query real-time qualification and pool status
+p-rox status --site example.com
+
+# Start continuous foreground background qualification daemon
+p-rox daemon --site https://example.com/ --route-workers 8 --site-workers 8
+```
+
 ---
 
 ## Part 7: Python API Reference
 
-### Basic Collection
+### 1. Basic Collection & Deduplication
 
 ```python
 from proxy_collector import ProxyCollector
@@ -246,9 +258,7 @@ for p in proxies:
     print(p.scheme, p.host, p.port, p.url, p.requests_url)
 ```
 
-### Streaming Processing (Low Memory)
-
-Process millions of proxies streamingly without allocating large lists:
+### 2. Low-Memory Streaming (2M+ Entries)
 
 ```python
 from proxy_collector import ProxyCollector
@@ -259,7 +269,7 @@ for proxy in collector.collect_stream(protocols=["socks5", "https"]):
     handle_proxy(proxy)
 ```
 
-### File Export with Detailed Statistics
+### 3. File Export with Detailed Statistics
 
 ```python
 from proxy_collector import ProxyCollector
@@ -274,16 +284,69 @@ print(f"Duration:             {stats.duration_seconds:.2f}s")
 print("Protocols breakdown: ", stats.by_protocol)
 ```
 
-### Direct Bridge to `ProxyPool`
-
-Directly populates a pool instance:
+### 4. Staged Qualification Pool (`ProxyPool`)
 
 ```python
-from proxy_collector import ProxyCollector
+from proxy_collector import ProxyPool, ProxyCollector
 
+pool = ProxyPool()
+
+# Ingest candidates
 collector = ProxyCollector()
+collector.ingest_into_pool(pool, limit=5000, protocols={"http", "https", "socks5"})
 
-# Bridge directly into any ProxyPool instance
+# Pick highest qualified proxy (L3 mix -> L2 site -> L1 route -> untested)
+proxy = pool.pick(site="example.com")
+print("Selected:", pool.requests_url(proxy))
+
+# Handle circuit breaker
+pool.ok(proxy)                       # Layer 1 route echo succeeded
+pool.site_ok(proxy, "example.com")   # Layer 2 target site succeeded
+pool.site_fail(proxy, "example.com", "HTTP-403")  # Target site cooldown
+pool.fail(proxy, "conn")             # Global socket failure quarantine
+```
+
+### 5. Identity-Leased Requests Session (`RoutedSession`)
+
+Subclass of `requests.Session` that automatically manages exclusive per-egress proxy leases across requests:
+
+```python
+from proxy_collector import ProxyPool, RoutedSession
+
+pool = ProxyPool()
+
+# RoutedSession automatically leases qualified proxies for the target site
+with RoutedSession(pool, site="https://example.com", min_stage=2) as session:
+    # 1. Standard GET request (lease held during request)
+    resp = session.get("https://example.com/api/data")
+    print(resp.status_code, resp.route_proxy["host"])
+
+    # 2. Streaming transfer (lease held across the entire stream; awards L3 qualification on finish)
+    with session.get("https://example.com/large-file.zip", stream=True) as stream_resp:
+        for chunk in stream_resp.iter_content(chunk_size=65536):
+            process_chunk(chunk)
+```
+
+### 6. Background Multi-Stage Monitor (`ProxyMonitor`)
+
+```python
+from proxy_collector import ProxyPool, ProxyMonitor
+
+pool = ProxyPool()
+
+# Launch background workers: route echo (L1) and site probes (L2)
+monitor = ProxyMonitor(
+    pool,
+    sites={"example.com": "https://example.com/robots.txt"},
+    route_workers=8,
+    site_workers=8,
+)
+monitor.start()
+
+# Monitor runs asynchronously in background feeding and qualifying proxies
+# To stop:
+monitor.close()
+```
 added = collector.ingest_into_pool(
     pool,
     limit=5000,
