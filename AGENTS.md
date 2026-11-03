@@ -78,6 +78,18 @@ Do not bypass or modify the exponential circuit breaker quarantine discipline in
 - Keep all raw data files (`all_proxies.txt`, `sources/`, `data/`) strictly ignored in `.gitignore`.
 - Ensure all CI workflows (`.github/workflows/ci.yml`) remain green across all supported Python versions.
 
+### 7. Interactive Single-Key Toggle & Real-Time Slot Scaling
+- When running with `--serve`, the interactive terminal runner exposes zero-latency keyboard controls in non-blocking cbreak mode:
+  - **`'s'` / `'S'`**: Toggles cleanly between `VIEW_MONITOR` (sticky top header with scrolling logs) and `VIEW_SERVER` (full-screen slot matrix).
+  - **`'+'` / `'='`**: Dynamically allocates and starts the next proxy slot on `base_port + current_count`.
+  - **`'-'` / `'_'`**: Dynamically stops and pops the highest numbered proxy slot (minimum 1 slot bound).
+- Never introduce multi-key menus, sub-prompts, or blocking stdin readers that halt the background testing or asyncio gateway loops.
+
+### 8. Truthful Slot Allocation & Survival Duration
+- Gateway slots bind exclusively to verified alive proxies from SQLite (`status = 'alive'`).
+- If fewer alive proxies exist than requested slots, surplus slots must truthfully display `status = 'waiting'` and `upstream = 'none (pool warming)'` rather than looping over identical proxies or faking health.
+- Proxy survival duration (`Alive Time`) is tracked continuously using SQLite `first_seen_alive`.
+
 ---
 
 ## 4. Codebase Directory Map
@@ -91,6 +103,7 @@ p-rox/
 │   ├── cli.py                  # CLI argument parser & subcommand actions
 │   ├── collector.py            # High-level orchestrator & pool ingestion bridge
 │   ├── dashboard.py            # Terminal ANSI dashboard layout & status formatters
+│   ├── db.py                   # SQLite database layer with WAL mode & telemetry
 │   ├── deduplicator.py         # Zero-allocation streaming canonical deduplicator
 │   ├── fetcher.py              # Parallel feed downloader with atomic .tmp swap & cache
 │   ├── gateway.py              # Asyncio forward proxy gateway server & slot manager
@@ -98,13 +111,14 @@ p-rox/
 │   ├── leases.py               # Exclusive per-site proxy lease manager by egress IP
 │   ├── models.py               # Data structures: Proxy, GeoLocation, Metrics, Profile
 │   ├── monitor.py              # Background qualification workers (L1 Route & L2 Site)
+│   ├── operations.py           # Feed sync, batch testing, & continuous conveyor-belt worker
 │   ├── parsers.py              # Multi-format streaming line and JSON parsers
 │   ├── pool.py                 # 4-tier pool, circuit breaker, & health persistence
 │   ├── profiler.py             # Dual-ping latency, anonymity tiering, and TLS tampering checks
 │   ├── routing.py              # Leased RoutedSession (requests.Session subclass)
 │   ├── service.py              # Coordination layer with fcntl.flock concurrency locks
 │   └── sources.py              # Catalog of 52 verified feeds across 9 providers
-├── tests/                      # Fast offline test suite (60 tests, <1s)
+├── tests/                      # Fast offline test suite (80 tests, <1s)
 ├── AGENTS.md                   # This file (Agent briefing & architectural rules)
 ├── pyproject.toml              # Package configuration & entry points
 └── README.md                   # Technical reference manual & documentation
@@ -122,7 +136,8 @@ source .venv/bin/activate
 pytest -v
 
 # 3. Test CLI commands locally
-p-rox stats
+p-rox status
+p-rox --serve
 p-rox gateway --help
 
 # 4. Check git status before committing

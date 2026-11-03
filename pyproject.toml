@@ -47,6 +47,11 @@ dev = [
     "pytest-mock",
 ]
 
+[project.urls]
+Homepage = "https://github.com/maxugly/p-rox"
+Repository = "https://github.com/maxugly/p-rox"
+Issues = "https://github.com/maxugly/p-rox/issues"
+
 [project.scripts]
 p-rox = "proxy_collector.cli:main"
 proxy-collector = "proxy_collector.cli:main"

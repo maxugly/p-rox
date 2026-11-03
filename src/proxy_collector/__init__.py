@@ -58,3 +58,4 @@ __all__ = [
 ]
 
 __version__ = "0.0.1"
+__repository__ = "https://github.com/maxugly/p-rox"

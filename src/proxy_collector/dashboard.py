@@ -290,6 +290,7 @@ class TerminalDashboard:
         # Clear screen & cursor to home
         lines.append("\033[2J\033[H")
         lines.append(f"\033[1;36m=== p-rox Local Proxy Gateway ({len(slots)} slots on {host}) ===\033[0m")
+        lines.append("\033[2mGitHub: https://github.com/maxugly/p-rox\033[0m")
         lines.append(f"\033[1;92mConnect To Proxy:\033[0m   \033[1m{urls_str}\033[0m  (Ports: \033[1;93m{port_range_str}\033[0m)")
         lines.append(f"\033[2mExample Usage:      curl -x http://{host}:{sample_port} https://httpbin.org/ip\033[0m")
         if target_site:

@@ -315,6 +315,7 @@ def cmd_run(args):
     final_stats = db.get_stats()
     print(f"Session stopped. Pool currently maintains \033[92m{final_stats['alive']} ALIVE\033[0m proxies.")
     print("Run 'p-rox status' anytime to inspect your verified working proxies.")
+    print("Source & Documentation: https://github.com/maxugly/p-rox")
     print("-" * 80)
 
 
@@ -430,6 +431,7 @@ def cmd_status(args):
     print("=" * 70)
     print("  p-rox — Proxy Pool Status")
     print("=" * 70)
+    print("  GitHub:             https://github.com/maxugly/p-rox")
     print(f"  Database:           {analytics['db_path']} ({analytics['db_size_mb']} MB)")
     print(f"  Total Candidates:   {analytics['total']:,}")
     print(f"  Untested:           {analytics['untested']:,}")
@@ -611,6 +613,7 @@ def main():
     parser = argparse.ArgumentParser(
         prog="p-rox",
         description="p-rox: Fast, transparent public proxy acquisition, filtering, and maintenance engine",
+        epilog="Source & Documentation: https://github.com/maxugly/p-rox",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging")
     parser.add_argument("--db", type=str, default=str(DEFAULT_DB_PATH), help="Path to SQLite database")
