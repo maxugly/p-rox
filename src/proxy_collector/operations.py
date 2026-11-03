@@ -60,6 +60,13 @@ def sync_candidates(
     total_streamed = 0
     newly_inserted = 0
 
+    def _notify(streamed: int, inserted: int):
+        if on_import_progress:
+            try:
+                on_import_progress(streamed, inserted)
+            except TypeError:
+                on_import_progress(streamed)
+
     for p in dedup_stream:
         batch.append(p)
         total_streamed += 1
@@ -70,8 +77,7 @@ def sync_candidates(
                 geoip_resolver=geoip_resolver,
             )
             batch.clear()
-            if on_import_progress:
-                on_import_progress(total_streamed)
+            _notify(total_streamed, newly_inserted)
 
     if batch:
         newly_inserted += db.upsert_batch(
@@ -80,8 +86,7 @@ def sync_candidates(
             geoip_resolver=geoip_resolver,
         )
         batch.clear()
-        if on_import_progress:
-            on_import_progress(total_streamed)
+        _notify(total_streamed, newly_inserted)
 
     import_duration = time.monotonic() - stream_start
     total_duration = time.monotonic() - start_time
@@ -96,6 +101,8 @@ def sync_candidates(
         "newly_added": newly_inserted,
         "total_in_db": stats["total"],
         "untested_in_db": stats["untested"],
+        "unresolved_geoip": stats.get("unresolved_geoip", 0),
+        "resolved_geoip": stats.get("resolved_geoip", 0),
         "duration_seconds": round(total_duration, 2),
         "fetch_seconds": round(fetch_duration, 2),
         "import_seconds": round(import_duration, 2),

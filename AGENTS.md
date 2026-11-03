@@ -124,7 +124,7 @@ p-rox/
 │   ├── routing.py              # Leased RoutedSession (requests.Session subclass)
 │   ├── service.py              # Coordination layer with fcntl.flock concurrency locks
 │   └── sources.py              # Catalog of 52 verified feeds across 9 providers
-├── tests/                      # Fast offline test suite (90 tests, <1s)
+├── tests/                      # Fast offline test suite (91 tests, <1s)
 ├── AGENTS.md                   # This file (Agent briefing & architectural rules)
 ├── pyproject.toml              # Package configuration & entry points
 └── README.md                   # Technical reference manual & documentation

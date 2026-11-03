@@ -381,8 +381,11 @@ def cmd_sync(args):
         err_str = f"({err})" if err else ""
         print(f"  {sym} {name:20} {b_str:10} {err_str}")
 
-    def on_import(count):
-        print(f"  ...ingested {count:,} candidates into database...", end="\r", flush=True)
+    def on_import(streamed, inserted=0):
+        if resolve_geoip:
+            print(f"  ...ingested {streamed:,} candidates (new: {inserted:,} │ resolving GeoIP)...", end="\r", flush=True)
+        else:
+            print(f"  ...ingested {streamed:,} candidates (new: {inserted:,})...", end="\r", flush=True)
 
     print("Step 1/2: Fetching 52 public proxy feeds...")
     sources_p = Path(args.sources).resolve() if getattr(args, "sources", None) else None
@@ -398,10 +401,48 @@ def cmd_sync(args):
     )
     print()
     print("\nStep 2/2: Candidate import complete.")
+
+    if resolve_geoip:
+        unresolved = db.get_unresolved_geoip_count()
+        if unresolved > 0:
+            total_in_db = res.get("total_in_db", db.get_stats()["total"])
+            initial_resolved = max(0, total_in_db - unresolved)
+            print(f"\nStep 3/3: Resolving GeoIP metadata for {unresolved:,} candidates...")
+
+            from .operations import run_background_geoip_worker
+
+            def _on_sync_geoip_batch(batch_count, total_resolved):
+                remaining = max(0, unresolved - total_resolved)
+                current_mapped = initial_resolved + total_resolved
+                pct = (current_mapped / total_in_db * 100) if total_in_db > 0 else 0.0
+                print(
+                    f"  ...GeoIP resolving: \033[1;92m{current_mapped:,}\033[0m mapped │ "
+                    f"\033[1;93m{remaining:,} to lookup ↓\033[0m │ \033[1m{pct:.1f}%\033[0m...",
+                    end="\r",
+                    flush=True,
+                )
+
+            run_background_geoip_worker(
+                db=db,
+                batch_size=5000,
+                on_batch_complete=_on_sync_geoip_batch,
+            )
+            print()
+
     print("-" * 70)
     print(f"  Feeds:              {res['feeds_downloaded']} downloaded, {res['feeds_cached']} cached, {res['feeds_failed']} failed")
     print(f"  Unique Ingested:    {res['newly_added']:,} newly added ({res['total_parsed']:,} parsed)")
     print(f"  Database Total:     {res['total_in_db']:,} candidates ({res['untested_in_db']:,} untested)")
+    final_stats = db.get_stats()
+    unres = final_stats.get("unresolved_geoip", 0)
+    res_geo = final_stats.get("resolved_geoip", max(0, final_stats["total"] - unres))
+    if not resolve_geoip:
+        print("  GeoIP Coverage:     disabled (--no-geoip)")
+    elif unres > 0:
+        pct = (res_geo / final_stats["total"] * 100) if final_stats["total"] > 0 else 0.0
+        print(f"  GeoIP Coverage:     {res_geo:,} mapped ({unres:,} to lookup, {pct:.1f}%)")
+    else:
+        print(f"  GeoIP Coverage:     \033[92m100% mapped\033[0m ({res_geo:,} candidates)")
     print(f"  Duration:           {res['duration_seconds']}s")
     print(f"  Database Path:      {db.db_path}")
     print("-" * 70)

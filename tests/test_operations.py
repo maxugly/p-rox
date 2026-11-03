@@ -254,3 +254,45 @@ def test_test_candidates_country_filter(tmp_path):
     assert db.get_alive_proxies()[0]["url"] == p_us.url
 
 
+def test_cmd_sync_with_geoip_intake(tmp_path, capsys):
+    import argparse
+    from proxy_collector.cli import cmd_sync
+
+    class MockResolver:
+        is_available = True
+
+        def lookup(self, ip: str):
+            from proxy_collector.models import GeoLocation
+            return GeoLocation(country_code="NL", city="Amsterdam", org="NL Net")
+
+    db_file = tmp_path / "intake.db"
+    args = argparse.Namespace(
+        db=str(db_file),
+        sources=str(tmp_path),
+        force=False,
+        concurrency=1,
+        no_geoip=False,
+    )
+
+    proxies = [
+        Proxy(scheme="http", host="5.5.5.5", port=8080),
+        Proxy(scheme="http", host="6.6.6.6", port=8080),
+    ]
+
+    with patch("proxy_collector.operations.ProxyCollector") as mock_col_cls, \
+         patch("proxy_collector.geoip.GeoIPResolver", return_value=MockResolver()), \
+         patch("proxy_collector.db.ProxyDB.upsert_batch", wraps=ProxyDB(db_path=db_file).upsert_batch):
+        mock_col = MagicMock()
+        mock_col.fetch.return_value = []
+        mock_col.collect_stream.return_value = iter(proxies)
+        mock_col_cls.return_value = mock_col
+
+        cmd_sync(args)
+
+    out = capsys.readouterr().out
+    assert "p-rox sync — Public Feed Ingestion & Candidate Import" in out
+    assert "Candidate import complete." in out
+    assert "GeoIP Coverage:" in out
+
+
+
