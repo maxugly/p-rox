@@ -1,9 +1,12 @@
 """Command-line interface for p-rox / proxy-collector."""
 
 import argparse
+import asyncio
 import concurrent.futures
 import json
 import logging
+import os
+import signal
 import sys
 import time
 from pathlib import Path

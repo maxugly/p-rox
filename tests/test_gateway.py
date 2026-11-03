@@ -150,3 +150,29 @@ def test_gateway_default_port(tmp_path):
     assert server.base_port == 3030
     assert server.slots_count == 10
 
+
+def test_cmd_gateway_cli_flags(tmp_path):
+    from unittest.mock import MagicMock
+    from proxy_collector.cli import cmd_gateway
+
+    runit_path = tmp_path / "run"
+    args = MagicMock()
+    args.status = False
+    args.stop = False
+    args.daemon = False
+    args.gen_runit = str(runit_path)
+    args.slots = 5
+    args.base_port = 3030
+    args.host = "127.0.0.1"
+    args.cache_dir = str(tmp_path)
+
+    cmd_gateway(args)
+    assert runit_path.is_file()
+    assert "--base-port 3030" in runit_path.read_text()
+
+    # Status check flag
+    args.gen_runit = None
+    args.status = True
+    cmd_gateway(args)
+
+
