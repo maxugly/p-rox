@@ -12,7 +12,12 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .dashboard import StickyTerminal, TerminalDashboard, render_sticky_header
+from .dashboard import (
+    StickyTerminal,
+    TerminalDashboard,
+    country_code_to_flag,
+    render_sticky_header,
+)
 from .db import DEFAULT_DB_PATH, ProxyDB
 from .gateway import GatewayServer
 from .geoip import GeoIPResolver, download_dbip_lite, download_maxmind_geolite2
@@ -114,10 +119,13 @@ def cmd_run(args):
         if is_alive:
             lat = f"{profile.latency.tcp_handshake_ms:.0f}ms"
             geo = profile.geo
-            loc = f"{geo.country_code} {geo.city}" if (geo and geo.city) else (geo.country_code if geo else "??")
+            code = geo.country_code if geo else ""
+            flag = country_code_to_flag(code)
+            f_str = f"{flag} " if flag else ""
+            loc = f"{f_str}{geo.country_code} {geo.city}" if (geo and geo.city) else (f"{f_str}{geo.country_code}" if geo else "??")
             anon = profile.security.anonymity.upper() if profile.security else ""
             egress = profile.egress_ip or ""
-            line = f"  \033[92m[ALIVE]\033[0m {url:35} {lat:>6}  {loc:16} {anon:7} (Egress: {egress})"
+            line = f"  \033[92m[ALIVE]\033[0m {url:35} {lat:>6}  {loc:18} {anon:7} (Egress: {egress})"
         else:
             reason = getattr(profile, "last_reason", "") or "failed"
             line = f"  \033[91m[DEAD ]\033[0m {url:35} {reason}"
@@ -288,19 +296,31 @@ def cmd_status(args):
     print(f"  Verified Alive:     \033[92m{analytics['alive']:,}\033[0m")
     print(f"  Dead / Benched:     \033[91m{analytics['dead']:,}\033[0m")
     if analytics["alive"] > 0:
-        c_str = ", ".join(f"{c[0]}: {c[1]}" for c in analytics["countries"][:10])
+        total_alive = analytics["alive"]
+        c_parts = []
+        for c in analytics["countries"][:10]:
+            code, cnt = c[0], c[1]
+            flag = country_code_to_flag(code)
+            f_str = f"{flag} " if flag else ""
+            pct = (cnt / total_alive) * 100
+            pct_str = f"{pct:.1f}%" if (pct % 1 != 0) else f"{int(pct)}%"
+            c_parts.append(f"{f_str}{code}: {cnt} ({pct_str})")
         print(f"  Ping Performance:   {analytics['avg_ping']:.0f}ms (±{analytics['stdev_ping']:.0f}ms)")
-        print(f"  Top Countries:      {c_str}")
+        print(f"  Top Countries:      {', '.join(c_parts)}")
 
     if alive_sample:
         print("-" * 70)
         print("  Fastest Verified Working Proxies (Freshest First):")
         for p in alive_sample:
             lat = f"{p['latency_ms']:.0f}ms" if p.get("latency_ms") else "-"
-            loc = p.get("country") or "??"
+            raw_country = p.get("country") or "??"
+            code = raw_country.split()[0].upper()[:2] if raw_country else ""
+            flag = country_code_to_flag(code)
+            f_str = f"{flag} " if flag else ""
+            loc = f"{f_str}{raw_country}"
             age_s = int(time.time() - (p.get("last_checked_at") or time.time()))
             age_str = f"{age_s}s ago" if age_s < 120 else f"{age_s // 60}m ago"
-            print(f"    {p['url']:35} {lat:>6}  {loc:16} (Egress: {p.get('egress_ip') or 'unknown'}) [{age_str}]")
+            print(f"    {p['url']:35} {lat:>6}  {loc:20} (Egress: {p.get('egress_ip') or 'unknown'}) [{age_str}]")
 
     print("=" * 70)
 

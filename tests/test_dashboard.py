@@ -72,7 +72,12 @@ def test_print_profile_card(capsys):
 
 
 def test_format_helpers():
-    from proxy_collector.dashboard import format_duration, format_uptime, visible_len
+    from proxy_collector.dashboard import (
+        country_code_to_flag,
+        format_duration,
+        format_uptime,
+        visible_len,
+    )
 
     assert format_duration(45) == "45s"
     assert format_duration(125) == "2m 05s"
@@ -84,6 +89,16 @@ def test_format_helpers():
 
     assert visible_len("\033[1;92mALIVE\033[0m") == 5
     assert visible_len("plain text") == 10
+
+    # Flag emoji conversion
+    assert country_code_to_flag("US") == "🇺🇸"
+    assert country_code_to_flag("de") == "🇩🇪"
+    assert country_code_to_flag("FR") == "🇫🇷"
+    assert country_code_to_flag("jp") == "🇯🇵"
+    assert country_code_to_flag("GB") == "🇬🇧"
+    assert country_code_to_flag("??") == ""
+    assert country_code_to_flag("") == ""
+    assert country_code_to_flag(None) == ""
 
 
 def test_render_sticky_header_empty():
@@ -151,7 +166,7 @@ def test_render_sticky_header_populated():
         width=80,
     )
 
-    assert len(lines) == 6
+    assert len(lines) == 7
     plain_lines = [ANSI_REGEX.sub("", l) for l in lines]
     assert "00:04:12" in plain_lines[1]
     assert "18.2/s" in plain_lines[1]
@@ -164,6 +179,9 @@ def test_render_sticky_header_populated():
     assert "Elite: 92% (13)" in plain_lines[3]
     assert "US: 8" in plain_lines[4]
     assert "DE: 3" in plain_lines[4]
+    assert "🇺🇸" in plain_lines[4]
+    assert "🇩🇪" in plain_lines[4]
+    assert "%" in plain_lines[4]
 
 
 def test_render_sticky_header_multiline_countries():

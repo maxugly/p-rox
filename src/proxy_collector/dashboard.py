@@ -36,15 +36,28 @@ def format_uptime(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{sec:02d}"
 
 
+def country_code_to_flag(code: Optional[str]) -> str:
+    """Convert a 2-letter ISO country code into Unicode flag emoji.
+
+    Uses Regional Indicator Symbols U+1F1E6 to U+1F1FF.
+    Zero external dependencies.
+    """
+    if not code or len(code) != 2 or not code.isalpha():
+        return ""
+    return "".join(chr(0x1F1E6 + ord(c.upper()) - ord("A")) for c in code)
+
+
 def format_country_lines(
     countries: List[Tuple[str, int]],
     width: int,
+    total_alive: Optional[int] = None,
     max_lines: int = 10,
 ) -> List[str]:
-    """Format list of (country_code, count) into multiple wrapped box lines without truncation."""
+    """Format list of (country_code, count) into multiple wrapped box lines with flags and percentages."""
     if not countries:
         return [_box_line("Countries: (Waiting for verified proxies...)", width)]
 
+    total_pool = total_alive if (total_alive is not None and total_alive > 0) else sum(c[1] for c in countries)
     total_countries = len(countries)
     prefix_first = f"Countries ({total_countries}): "
     prefix_next = " " * len(prefix_first)
@@ -55,7 +68,15 @@ def format_country_lines(
     is_first = True
 
     for code, cnt in countries:
-        item = f"{code}: {cnt}"
+        flag = country_code_to_flag(code)
+        flag_str = f"{flag} " if flag else ""
+        if total_pool > 0:
+            pct = (cnt / total_pool) * 100
+            pct_str = f"{pct:.1f}%" if (pct % 1 != 0) else f"{int(pct)}%"
+            item = f"{flag_str}{code}: {cnt} ({pct_str})"
+        else:
+            item = f"{flag_str}{code}: {cnt}"
+
         prefix = prefix_first if is_first else prefix_next
         test_line = prefix + " │ ".join(current_items + [item])
 
@@ -155,9 +176,9 @@ def render_sticky_header(
 
     line3 = f"{ping_str} │ {life_str} │ {oldest_str} │ {elite_str}"
 
-    # Country Lines (multi-line wrapping)
+    # Country Lines (multi-line wrapping with flags and percentages)
     countries = analytics.get("countries", [])
-    country_lines = format_country_lines(countries, width)
+    country_lines = format_country_lines(countries, width, total_alive=alive)
 
     bottom_border = f"└{'─' * (width - 2)}┘"
 
@@ -237,6 +258,7 @@ class TerminalDashboard:
 
     render_sticky_header = staticmethod(render_sticky_header)
     format_country_lines = staticmethod(format_country_lines)
+    country_code_to_flag = staticmethod(country_code_to_flag)
     format_duration = staticmethod(format_duration)
     format_uptime = staticmethod(format_uptime)
 
