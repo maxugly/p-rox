@@ -166,6 +166,51 @@ def test_render_sticky_header_populated():
     assert "DE: 3" in plain_lines[4]
 
 
+def test_render_sticky_header_multiline_countries():
+    from proxy_collector.dashboard import ANSI_REGEX, render_sticky_header
+
+    # 14 countries that cannot fit in a single 80-character width line
+    countries = [
+        ("US", 50), ("DE", 20), ("CA", 15), ("GB", 10),
+        ("FR", 9), ("NL", 8), ("JP", 7), ("KR", 6),
+        ("SG", 5), ("IN", 4), ("BR", 3), ("AU", 2),
+        ("IT", 2), ("ES", 1),
+    ]
+
+    analytics = {
+        "total": 1000,
+        "untested": 800,
+        "alive": 152,
+        "dead": 48,
+        "avg_ping": 95.0,
+        "stdev_ping": 15.0,
+        "avg_life_s": 300.0,
+        "oldest_alive_s": 900.0,
+        "countries": countries,
+        "anonymity": {"ELITE": 140, "ANONYMOUS": 12},
+    }
+
+    lines = render_sticky_header(
+        analytics=analytics,
+        session_died=2,
+        uptime_s=60.0,
+        speed=10.0,
+        workers=20,
+        heartbeat_s=180.0,
+        width=80,
+    )
+
+    # Should have wrapped into at least 7 lines (more than 1 country line)
+    assert len(lines) >= 7
+    plain_lines = [ANSI_REGEX.sub("", l) for l in lines]
+    all_text = " ".join(plain_lines)
+
+    # Every country must be visible in the output (no truncation like "+ 2 more")
+    assert "+ " not in all_text and "more" not in all_text
+    for code, _ in countries:
+        assert f"{code}:" in all_text
+
+
 def test_sticky_terminal_disabled_mode(capsys):
     from proxy_collector.dashboard import StickyTerminal
 

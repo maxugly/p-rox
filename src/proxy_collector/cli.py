@@ -60,6 +60,9 @@ def cmd_run(args):
 
     # Draw initial sticky header
     initial_analytics = db.get_pool_analytics()
+    start_time = time.monotonic()
+    runtime_state = {"session_died": 0, "rate": 0.0, "total_tested": 0}
+
     if terminal.enabled:
         terminal.init_terminal()
         header_lines = render_sticky_header(
@@ -78,6 +81,31 @@ def cmd_run(args):
         print("  Press Ctrl+C to stop cleanly.")
         print("=" * 80)
 
+    # 1Hz background ticker thread ensures real-time clock ticking and telemetry refresh
+    def _clock_ticker():
+        while not stop_event.is_set():
+            stop_event.wait(1.0)
+            if stop_event.is_set():
+                break
+            if terminal.enabled:
+                elapsed = time.monotonic() - start_time
+                try:
+                    cur_analytics = db.get_pool_analytics()
+                    cur_header = render_sticky_header(
+                        analytics=cur_analytics,
+                        session_died=runtime_state["session_died"],
+                        uptime_s=elapsed,
+                        speed=runtime_state["rate"],
+                        workers=workers,
+                        heartbeat_s=keepalive,
+                    )
+                    terminal.update_header(cur_header)
+                except Exception:
+                    pass
+
+    ticker_thread = threading.Thread(target=_clock_ticker, daemon=True)
+    ticker_thread.start()
+
     def on_result(candidate, is_alive, profile):
         url = candidate.get("url") or f"{candidate.get('scheme')}://{candidate.get('host')}:{candidate.get('port')}"
         if is_alive:
@@ -93,9 +121,13 @@ def cmd_run(args):
         terminal.print_log(line)
 
     def on_tick(cur_stats, rate):
+        runtime_state["session_died"] = cur_stats.get("session_died", 0)
+        runtime_state["rate"] = rate
+        runtime_state["total_tested"] = cur_stats.get("total_tested_session", 0)
+
         analytics = db.get_pool_analytics()
-        session_died = cur_stats.get("session_died", 0)
-        uptime_s = cur_stats.get("uptime_s", 0.0)
+        session_died = runtime_state["session_died"]
+        uptime_s = time.monotonic() - start_time
         if terminal.enabled:
             header_lines = render_sticky_header(
                 analytics=analytics,

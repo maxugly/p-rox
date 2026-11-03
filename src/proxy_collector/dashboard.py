@@ -36,29 +36,51 @@ def format_uptime(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{sec:02d}"
 
 
-def _format_country_list(countries: List[Tuple[str, int]], max_width: int) -> str:
-    """Format list of (country_code, count) into a dense string with overflow indicator."""
+def format_country_lines(
+    countries: List[Tuple[str, int]],
+    width: int,
+    max_lines: int = 10,
+) -> List[str]:
+    """Format list of (country_code, count) into multiple wrapped box lines without truncation."""
     if not countries:
-        return "(Waiting for verified proxies...)"
-    shown: List[str] = []
-    for i, (code, cnt) in enumerate(countries):
+        return [_box_line("Countries: (Waiting for verified proxies...)", width)]
+
+    total_countries = len(countries)
+    prefix_first = f"Countries ({total_countries}): "
+    prefix_next = " " * len(prefix_first)
+    inner_width = max(20, width - 4)  # space inside │ ... │
+
+    lines: List[str] = []
+    current_items: List[str] = []
+    is_first = True
+
+    for code, cnt in countries:
         item = f"{code}: {cnt}"
-        if i == len(countries) - 1:
-            candidate = " │ ".join(shown + [item])
-            if len(candidate) <= max_width:
-                shown.append(item)
-            else:
-                shown.append("(+1 more)")
-            break
-        remaining = len(countries) - (i + 1)
-        suffix = f" (+{remaining} more)"
-        candidate = " │ ".join(shown + [item]) + suffix
-        if len(candidate) <= max_width:
-            shown.append(item)
+        prefix = prefix_first if is_first else prefix_next
+        test_line = prefix + " │ ".join(current_items + [item])
+
+        if visible_len(test_line) <= inner_width:
+            current_items.append(item)
         else:
-            shown.append(f"(+{len(countries) - i} more)")
-            break
-    return " │ ".join(shown)
+            if current_items:
+                line_str = prefix + " │ ".join(current_items)
+                lines.append(_box_line(line_str, width))
+                current_items = [item]
+                is_first = False
+            else:
+                lines.append(_box_line(test_line, width))
+                current_items = []
+                is_first = False
+
+            if len(lines) >= max_lines:
+                break
+
+    if current_items and len(lines) < max_lines:
+        prefix = prefix_first if is_first else prefix_next
+        line_str = prefix + " │ ".join(current_items)
+        lines.append(_box_line(line_str, width))
+
+    return lines
 
 
 def _box_line(content: str, width: int) -> str:
@@ -133,23 +155,21 @@ def render_sticky_header(
 
     line3 = f"{ping_str} │ {life_str} │ {oldest_str} │ {elite_str}"
 
-    # Line 4: Dense Countries List
+    # Country Lines (multi-line wrapping)
     countries = analytics.get("countries", [])
-    total_countries = len(countries)
-    prefix = f"Countries ({total_countries}): " if total_countries > 0 else "Countries: "
-    avail_width = max(20, width - 4 - len(prefix))
-    line4 = f"{prefix}{_format_country_list(countries, avail_width)}"
+    country_lines = format_country_lines(countries, width)
 
     bottom_border = f"└{'─' * (width - 2)}┘"
 
-    return [
+    header = [
         top_border,
         _box_line(line1, width),
         _box_line(line2, width),
         _box_line(line3, width),
-        _box_line(line4, width),
-        bottom_border,
     ]
+    header.extend(country_lines)
+    header.append(bottom_border)
+    return header
 
 
 class StickyTerminal:
@@ -159,13 +179,16 @@ class StickyTerminal:
         self.header_lines = header_lines
         self.enabled = sys.stdout.isatty() if enabled is None else enabled
         self._initialized = False
+        self._current_header_lines = header_lines
 
-    def init_terminal(self):
+    def init_terminal(self, header_lines: Optional[int] = None):
         """Set DECSTBM scrolling margin below the sticky header."""
-        if not self.enabled or self._initialized:
+        if not self.enabled:
             return
+        if header_lines is not None:
+            self._current_header_lines = header_lines
         cols, rows = shutil.get_terminal_size(fallback=(80, 24))
-        top_margin = self.header_lines + 2  # Leave 1 blank line below header
+        top_margin = min(self._current_header_lines + 2, max(4, rows - 4))
         sys.stdout.write(f"\033[2J\033[{top_margin};{rows}r\033[{top_margin};1H")
         sys.stdout.flush()
         self._initialized = True
@@ -174,8 +197,15 @@ class StickyTerminal:
         """Redraw sticky header at top of terminal without altering log cursor."""
         if not self.enabled:
             return
+        n_lines = len(lines)
         if not self._initialized:
-            self.init_terminal()
+            self.init_terminal(header_lines=n_lines)
+        elif n_lines != self._current_header_lines:
+            cols, rows = shutil.get_terminal_size(fallback=(80, 24))
+            self._current_header_lines = n_lines
+            top_margin = min(n_lines + 2, max(4, rows - 4))
+            sys.stdout.write(f"\033[{top_margin};{rows}r")
+
         sys.stdout.write("\033[s")  # Save cursor
         for idx, line in enumerate(lines, start=1):
             sys.stdout.write(f"\033[{idx};1H\033[K{line}")
@@ -206,6 +236,7 @@ class TerminalDashboard:
     """Formats and prints live terminal status matrices for slots, pools, and profiles."""
 
     render_sticky_header = staticmethod(render_sticky_header)
+    format_country_lines = staticmethod(format_country_lines)
     format_duration = staticmethod(format_duration)
     format_uptime = staticmethod(format_uptime)
 

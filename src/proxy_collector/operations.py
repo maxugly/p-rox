@@ -122,27 +122,7 @@ def test_candidates(
         )
         profile = profiler.profile(p_obj)
         is_alive = bool(profile.tier > 0 and profile.egress_ip and profile.latency.tcp_handshake_ms < float("inf"))
-
-        # Save to SQLite
-        geo = profile.geo
-        country = f"{geo.country_code} ({geo.city})" if (geo and geo.city) else (geo.country_code if geo else None)
-        city = geo.city if geo else None
-        asn = geo.org if geo else None
-        anonymity = profile.security.anonymity if profile.security else "unknown"
-
-        db.record_test_result(
-            url=p_obj.url,
-            is_alive=is_alive,
-            latency_ms=profile.latency.tcp_handshake_ms if is_alive else None,
-            ttfb_ms=profile.latency.http_ttfb_ms if is_alive else None,
-            egress_ip=profile.egress_ip if is_alive else None,
-            country=country,
-            city=city,
-            asn=asn,
-            anonymity=anonymity,
-        )
-
-        return c, is_alive, profile
+        return c, is_alive, profile, p_obj.url
 
     workers = max(1, min(workers, len(candidates)))
 
@@ -150,12 +130,31 @@ def test_candidates(
         futures = {executor.submit(_worker, c): c for c in candidates}
         for fut in concurrent.futures.as_completed(futures):
             try:
-                candidate, is_alive, profile = fut.result()
+                candidate, is_alive, profile, target_url = fut.result()
                 tested_count += 1
                 if is_alive:
                     alive_count += 1
                 else:
                     dead_count += 1
+
+                # Sequentially record test result in SQLite from the main thread (zero lock contention)
+                geo = profile.geo
+                country = f"{geo.country_code} ({geo.city})" if (geo and geo.city) else (geo.country_code if geo else None)
+                city = geo.city if geo else None
+                asn = geo.org if geo else None
+                anonymity = profile.security.anonymity if profile.security else "unknown"
+
+                db.record_test_result(
+                    url=target_url,
+                    is_alive=is_alive,
+                    latency_ms=profile.latency.tcp_handshake_ms if is_alive else None,
+                    ttfb_ms=profile.latency.http_ttfb_ms if is_alive else None,
+                    egress_ip=profile.egress_ip if is_alive else None,
+                    country=country,
+                    city=city,
+                    asn=asn,
+                    anonymity=anonymity,
+                )
 
                 if on_result:
                     on_result(candidate, is_alive, profile)
