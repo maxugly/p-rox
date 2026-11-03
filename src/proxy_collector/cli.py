@@ -132,13 +132,13 @@ def cmd_test(args):
 
 
 def cmd_status(args):
-    """Query transparent database stats and active gateway status."""
+    """Query transparent database stats and proxy pool maintenance health."""
     db = ProxyDB(db_path=args.db)
     stats = db.get_stats()
-    alive_sample = db.get_alive_proxies(limit=5)
+    alive_sample = db.get_alive_proxies(limit=8)
 
     print("=" * 70)
-    print("  p-rox — System Status")
+    print("  p-rox — Proxy Pool Status")
     print("=" * 70)
     print(f"  Database:           {stats['db_path']} ({stats['db_size_mb']} MB)")
     print(f"  Total Candidates:   {stats['total']:,}")
@@ -146,40 +146,9 @@ def cmd_status(args):
     print(f"  Verified Alive:     \033[92m{stats['alive']:,}\033[0m")
     print(f"  Dead / Benched:     \033[91m{stats['dead']:,}\033[0m")
 
-    # Gateway status
-    cache_p = Path(args.cache_dir or DEFAULT_CACHE_DIR).expanduser().resolve()
-    status_file = cache_p / "gateway_status.json"
-    pid_file = cache_p / "gateway.pid"
-
-    is_running = False
-    if pid_file.is_file():
-        try:
-            pid = int(pid_file.read_text().strip())
-            os.kill(pid, 0)
-            is_running = True
-        except (ProcessLookupError, ValueError, PermissionError):
-            pid_file.unlink(missing_ok=True)
-            status_file.unlink(missing_ok=True)
-
-    if is_running and status_file.is_file():
-        try:
-            gw_data = json.loads(status_file.read_text(encoding="utf-8"))
-            slots = gw_data.get("slots", [])
-            print("-" * 70)
-            print(f"  Gateway:            \033[92mRUNNING\033[0m on {gw_data.get('host', '127.0.0.1')} ({len(slots)} slots)")
-            for s in slots[:5]:
-                loc = s.get("country") or "unknown"
-                print(f"    Slot {s['slot_id']} (:{s['port']}) -> {s.get('upstream', 'none')} [{s.get('status', 'healthy')}] ({loc})")
-            if len(slots) > 5:
-                print(f"    ... and {len(slots) - 5} more slots")
-        except Exception:
-            pass
-    else:
-        print(f"  Gateway:            STOPPED")
-
     if alive_sample:
         print("-" * 70)
-        print("  Fastest Working Proxies:")
+        print("  Fastest Verified Working Proxies:")
         for p in alive_sample:
             lat = f"{p['latency_ms']:.0f}ms" if p.get("latency_ms") else "-"
             loc = p.get("country") or "??"
@@ -309,10 +278,14 @@ def cmd_update_geoip(args):
 def main():
     parser = argparse.ArgumentParser(
         prog="p-rox",
-        description="p-rox: Fast, transparent public proxy acquisition, testing, and gateway rotation",
+        description="p-rox: Fast, transparent public proxy acquisition, filtering, and maintenance engine",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+        metavar="{sync,test,status,update-geoip}",
+    )
 
     # 1. sync (aliases: fetch, update)
     p_sync = subparsers.add_parser("sync", aliases=["fetch"], help="Download 52 feeds and import candidates into SQLite")
@@ -331,31 +304,31 @@ def main():
     p_test.add_argument("--proxy", type=str, default=None, help="Test a single specific proxy URI")
     p_test.set_defaults(func=cmd_test)
 
-    # 3. gateway (aliases: serve)
-    p_gateway = subparsers.add_parser("gateway", aliases=["serve"], help="Run local forward proxy slots (default: 127.0.0.1:3030..3039)")
-    p_gateway.add_argument("--slots", type=int, default=10, help="Number of static port slots (default: 10)")
-    p_gateway.add_argument("--base-port", type=int, default=3030, help="Starting port number (default: 3030)")
-    p_gateway.add_argument("--host", type=str, default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1)")
-    p_gateway.add_argument("--site", type=str, default=None, help="Optional target site for L2 qualification")
-    p_gateway.add_argument("--cache-dir", type=str, default=None, help="Cache directory for gateway status")
-    p_gateway.add_argument("--daemon", action="store_true", help="Run as background daemon process")
-    p_gateway.add_argument("--stop", action="store_true", help="Stop running background gateway daemon")
-    p_gateway.add_argument("--status", action="store_true", help="Query status of running gateway slots")
-    p_gateway.add_argument("--gen-runit", type=str, default=None, help="Generate a Void Linux runit service script at PATH")
-    p_gateway.set_defaults(func=cmd_gateway)
-
-    # 4. status
-    p_status = subparsers.add_parser("status", help="Query transparent database stats and active gateway status")
+    # 3. status
+    p_status = subparsers.add_parser("status", help="Query database stats, tested proxies, and pool health")
     p_status.add_argument("--db", type=str, default=str(DEFAULT_DB_PATH), help="Path to SQLite database")
-    p_status.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
     p_status.set_defaults(func=cmd_status)
 
-    # 5. update-geoip
+    # 4. update-geoip
     p_geoip = subparsers.add_parser("update-geoip", help="Download local binary GeoIP database (DB-IP Lite or MaxMind)")
     p_geoip.add_argument("--source", type=str, default="dbip", choices=["dbip", "maxmind"], help="GeoIP source (default: dbip)")
     p_geoip.add_argument("--license-key", type=str, default=None, help="MaxMind account license key (if source is maxmind)")
     p_geoip.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
     p_geoip.set_defaults(func=cmd_update_geoip)
+
+    # Server / gateway is decoupled and disabled by default
+    if any(arg in sys.argv for arg in ("gateway", "serve")):
+        p_gateway = subparsers.add_parser("gateway", aliases=["serve"], help="[Experimental] Run local proxy server")
+        p_gateway.add_argument("--slots", type=int, default=10)
+        p_gateway.add_argument("--base-port", type=int, default=3030)
+        p_gateway.add_argument("--host", type=str, default="127.0.0.1")
+        p_gateway.add_argument("--site", type=str, default=None)
+        p_gateway.add_argument("--cache-dir", type=str, default=None)
+        p_gateway.add_argument("--daemon", action="store_true")
+        p_gateway.add_argument("--stop", action="store_true")
+        p_gateway.add_argument("--status", action="store_true")
+        p_gateway.add_argument("--gen-runit", type=str, default=None)
+        p_gateway.set_defaults(func=cmd_gateway)
 
     args = parser.parse_args()
     setup_logging(args.verbose)
