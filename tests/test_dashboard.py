@@ -40,6 +40,43 @@ def test_render_gateway_dashboard():
     assert "http://185.220.101.4:9050" in output
 
 
+def test_render_gateway_dashboard_with_geoip_stats():
+    mock_slot = MagicMock()
+    mock_slot.slot_id = 0
+    mock_slot.port = 3030
+    mock_slot.stats.status = "healthy"
+    mock_slot.stats.country = "US New York"
+    mock_slot.stats.anonymity = "elite"
+    mock_slot.stats.tcp_ms = 35.0
+    mock_slot.stats.ttfb_ms = 90.0
+    mock_slot.stats.connections_active = 0
+    mock_slot.stats.bytes_received = 0
+    mock_slot.stats.bytes_sent = 0
+    mock_slot.stats.upstream = "http://1.2.3.4:8080"
+
+    # Resolving state
+    out_resolving = TerminalDashboard.render_gateway_dashboard(
+        slots=[mock_slot],
+        host="127.0.0.1",
+        geoip_stats={"unresolved": 4000, "resolved": 16000, "total": 20000},
+    )
+    assert "GeoIP Resolving:" in out_resolving
+    assert "16,000" in out_resolving
+    assert "4,000 to lookup ↓" in out_resolving
+    assert "80%" in out_resolving
+
+    # 100% Mapped state
+    out_done = TerminalDashboard.render_gateway_dashboard(
+        slots=[mock_slot],
+        host="127.0.0.1",
+        geoip_stats={"unresolved": 0, "resolved": 20000, "total": 20000},
+    )
+    assert "GeoIP Coverage:" in out_done
+    assert "100% mapped" in out_done
+    assert "20,000 candidates" in out_done
+
+
+
 def test_print_profile_card(capsys):
     p = Proxy(scheme="http", host="1.2.3.4", port=8080)
     profile = ProxyProfile(

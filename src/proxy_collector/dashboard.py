@@ -284,6 +284,7 @@ class TerminalDashboard:
         target_site: Optional[str] = None,
         pool_stats: Optional[Dict[str, int]] = None,
         width: Optional[int] = None,
+        geoip_stats: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Render ANSI live dashboard for local gateway slots."""
         ports = [s.port for s in slots]
@@ -314,6 +315,24 @@ class TerminalDashboard:
             filtered = {k.title() if isinstance(k, str) else k: v for k, v in pool_stats.items() if k not in ("db_path", "db_size_mb")}
             p_str = " │ ".join(f"{k}: {v:,}" if isinstance(v, int) else f"{k}: {v}" for k, v in filtered.items())
             lines.append(f"Pool Summary:       {p_str}")
+
+        if geoip_stats:
+            unresolved = geoip_stats.get("unresolved", 0)
+            resolved = geoip_stats.get("resolved", 0)
+            total = geoip_stats.get("total", 0)
+            is_no_geoip = geoip_stats.get("no_geoip", False)
+            if is_no_geoip:
+                lines.append("GeoIP:              \033[2mdisabled (--no-geoip)\033[0m")
+            elif unresolved > 0:
+                pct = (resolved / total * 100) if total > 0 else 0.0
+                pct_str = f"{pct:.1f}%" if (pct % 1 != 0) else f"{int(pct)}%"
+                lines.append(
+                    f"GeoIP Resolving:    \033[1;92m{resolved:,}\033[0m mapped │ "
+                    f"\033[1;93m{unresolved:,} to lookup ↓\033[0m │ "
+                    f"\033[1m{pct_str}\033[0m"
+                )
+            elif total > 0:
+                lines.append(f"GeoIP Coverage:     \033[92m100% mapped\033[0m ({resolved:,} candidates)")
 
         lines.append("\033[2mToggle View: [s] Switch to Pool Monitor  │  [+] Add Port  │  [-] Remove Port  │  [Ctrl+C] Stop\033[0m")
         lines.append("")

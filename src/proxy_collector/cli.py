@@ -161,11 +161,18 @@ def cmd_run(args):
             "Untested": st.get("untested", 0),
             "Dead": st.get("dead", 0),
         }
+        geoip_info = {
+            "unresolved": geoip_state["unresolved"],
+            "resolved": geoip_state["resolved"],
+            "total": geoip_state.get("total", st.get("total", 0)),
+            "no_geoip": no_geoip,
+        }
         dashboard_str = TerminalDashboard.render_gateway_dashboard(
             slots=server.slots,
             host=server.host,
             target_site=server.target_site,
             pool_stats=pool_stats,
+            geoip_stats=geoip_info,
         )
         sys.stdout.write("\033[H" + dashboard_str)
         sys.stdout.flush()
