@@ -181,3 +181,138 @@ class CollectionStats:
     by_source: Dict[str, int] = field(default_factory=dict)
     feed_results: List[FetchResult] = field(default_factory=list)
     duration_seconds: float = 0.0
+
+
+@dataclass
+class GeoLocation:
+    """Geographic and ASN information for a proxy or egress IP."""
+
+    country_code: str = ""
+    country_name: str = ""
+    city: str = ""
+    region: str = ""
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    asn: Optional[int] = None
+    org: str = ""
+    is_datacenter: bool = False
+    source: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "country_code": self.country_code,
+            "country_name": self.country_name,
+            "city": self.city,
+            "region": self.region,
+            "latitude": self.latitude,
+            "longitude": self.longitude,
+            "asn": self.asn,
+            "org": self.org,
+            "is_datacenter": self.is_datacenter,
+            "source": self.source,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "GeoLocation":
+        if not data:
+            return cls()
+        return cls(
+            country_code=str(data.get("country_code", "") or ""),
+            country_name=str(data.get("country_name", "") or ""),
+            city=str(data.get("city", "") or ""),
+            region=str(data.get("region", "") or ""),
+            latitude=float(data["latitude"]) if data.get("latitude") is not None else None,
+            longitude=float(data["longitude"]) if data.get("longitude") is not None else None,
+            asn=int(data["asn"]) if data.get("asn") is not None else None,
+            org=str(data.get("org", "") or ""),
+            is_datacenter=bool(data.get("is_datacenter", False)),
+            source=str(data.get("source", "") or ""),
+        )
+
+
+@dataclass
+class LatencyMetrics:
+    """Network latency benchmarks for a proxy."""
+
+    tcp_handshake_ms: float = 0.0
+    http_ttfb_ms: float = 0.0
+    measured_at: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "tcp_handshake_ms": round(self.tcp_handshake_ms, 2),
+            "http_ttfb_ms": round(self.http_ttfb_ms, 2),
+            "measured_at": self.measured_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "LatencyMetrics":
+        if not data:
+            return cls()
+        return cls(
+            tcp_handshake_ms=float(data.get("tcp_handshake_ms", 0.0) or 0.0),
+            http_ttfb_ms=float(data.get("http_ttfb_ms", 0.0) or 0.0),
+            measured_at=float(data.get("measured_at", 0.0) or 0.0),
+        )
+
+
+@dataclass
+class SecurityMetrics:
+    """Security and integrity checks."""
+
+    tls_tampering_detected: bool = False
+    cert_issuer: Optional[str] = None
+    anonymity: str = "unknown"  # "elite", "anonymous", "transparent", "unknown"
+    leaked_ip: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "tls_tampering_detected": self.tls_tampering_detected,
+            "cert_issuer": self.cert_issuer,
+            "anonymity": self.anonymity,
+            "leaked_ip": self.leaked_ip,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "SecurityMetrics":
+        if not data:
+            return cls()
+        return cls(
+            tls_tampering_detected=bool(data.get("tls_tampering_detected", False)),
+            cert_issuer=data.get("cert_issuer"),
+            anonymity=str(data.get("anonymity", "unknown") or "unknown"),
+            leaked_ip=data.get("leaked_ip"),
+        )
+
+
+@dataclass
+class ProxyProfile:
+    """Rich telemetry, qualification, and operational profile for a proxy."""
+
+    proxy: Proxy
+    egress_ip: Optional[str] = None
+    geo: Optional[GeoLocation] = None
+    latency: Optional[LatencyMetrics] = None
+    security: Optional[SecurityMetrics] = None
+    tier: int = 0
+    fails: int = 0
+    consec: int = 0
+    benched_until: float = 0.0
+    last_tested: float = 0.0
+    last_reason: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "proxy": self.proxy.as_pool_dict(),
+            "egress_ip": self.egress_ip,
+            "geo": self.geo.to_dict() if self.geo else None,
+            "latency": self.latency.to_dict() if self.latency else None,
+            "security": self.security.to_dict() if self.security else None,
+            "tier": self.tier,
+            "fails": self.fails,
+            "consec": self.consec,
+            "benched_until": self.benched_until,
+            "last_tested": self.last_tested,
+            "last_reason": self.last_reason,
+        }
+

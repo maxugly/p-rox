@@ -267,6 +267,23 @@ curl -x http://127.0.0.1:3030 https://ifconfig.me
 curl -x http://127.0.0.1:3031 https://ifconfig.me
 ```
 
+#### 6. Offline GeoIP Management & Deep Profiling
+Enrich proxies with offline MMDB location data, dual-ping latency, anonymity tiering, and TLS tampering checks:
+
+```bash
+# 1. Download free DB-IP City Lite database (zero signup required, CC-BY-4.0)
+p-rox update-geoip --source dbip
+
+# 2. Or download MaxMind GeoLite2 using a free account license key
+p-rox update-geoip --source maxmind --license-key <YOUR_LICENSE_KEY>
+
+# 3. Benchmark and profile a single proxy
+p-rox profile --proxy http://185.220.101.4:9050
+
+# 4. Benchmark candidates from the pool and save enriched telemetry
+p-rox profile --limit 20
+```
+
 ---
 
 ## Part 7: Python API Reference
@@ -403,6 +420,28 @@ async def run_gateway():
 asyncio.run(run_gateway())
 ```
 
+### 8. GeoIP Resolution & Network Profiling
+
+```python
+from proxy_collector import GeoIPResolver, ProxyProfiler, Proxy
+
+# 1. Microsecond local GeoIP lookups (supports DB-IP Lite and MaxMind GeoLite2)
+geoip = GeoIPResolver()
+geo = geoip.lookup("185.220.101.4")
+print(geo.country_code, geo.city, geo.org, geo.is_datacenter)
+
+# 2. Deep proxy profiling (Dual-Ping, true egress echo, anonymity tier, TLS tampering)
+profiler = ProxyProfiler(geoip_resolver=geoip)
+p = Proxy(scheme="http", host="185.220.101.4", port=9050)
+profile = profiler.profile(p)
+
+print(f"Discovered Egress IP: {profile.egress_ip}")
+print(f"TCP Handshake Latency: {profile.latency.tcp_handshake_ms}ms")
+print(f"HTTP TTFB Latency:      {profile.latency.http_ttfb_ms}ms")
+print(f"Anonymity Level:        {profile.security.anonymity}")  # elite, anonymous, or transparent
+print(f"TLS Tampering / MitM:   {profile.security.tls_tampering_detected}")
+```
+
 ---
 
 ## Part 8: Testing & Development
@@ -413,7 +452,7 @@ Run the offline regression test suite (mocked networking, zero outbound calls):
 pytest -v
 ```
 
-All 42 test units run in `<0.4s` covering concurrent feed downloads, multi-format stream parsing, canonical deduplication, staged pool progression, identity leasing, circuit breaker quaratine, and local gateway transparent tunneling.
+All 58 test units run in `<0.5s` covering concurrent feed downloads, multi-format stream parsing, canonical deduplication, staged pool progression, identity leasing, circuit breaker quarantine, local gateway transparent tunneling, dual-ping latency, anonymity tiering, and GeoIP resolution.
 
 ---
 

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote, unquote, urlsplit
 
+from .dashboard import TerminalDashboard
 from .models import Proxy
 from .pool import DEFAULT_CACHE_DIR, DEFAULT_PROXY_FILE, ProxyPool, site_key
 
@@ -39,6 +40,10 @@ class SlotStats:
     bytes_sent: int = 0
     bytes_received: int = 0
     errors_total: int = 0
+    anonymity: str = "unknown"
+    tcp_ms: Optional[float] = None
+    ttfb_ms: Optional[float] = None
+    egress_ip: str = ""
     last_swapped_at: float = field(default_factory=time.time)
     last_active_at: float = field(default_factory=time.time)
 
@@ -85,6 +90,27 @@ class ProxySlot:
         self.stats.status = "healthy"
         self.stats.last_swapped_at = time.time()
         self._consecutive_errors = 0
+
+        # Extract telemetry from pool health profile if available
+        k = ProxyPool._proxy_key(proxy)
+        health_info = self.pool.health.get(k, {})
+        geo_info = health_info.get("geo") or {}
+        if geo_info and isinstance(geo_info, dict):
+            loc_parts = [geo_info.get("country_code", ""), geo_info.get("city", "")]
+            loc_label = " ".join(p for p in loc_parts if p).strip()
+            if loc_label:
+                self.stats.country = loc_label
+
+        lat_info = health_info.get("latency") or {}
+        if isinstance(lat_info, dict):
+            self.stats.tcp_ms = lat_info.get("tcp_handshake_ms")
+            self.stats.ttfb_ms = lat_info.get("http_ttfb_ms")
+
+        sec_info = health_info.get("security") or {}
+        if isinstance(sec_info, dict):
+            self.stats.anonymity = sec_info.get("anonymity", "unknown")
+
+        self.stats.egress_ip = health_info.get("egress", "")
         logger.info("Slot %d (:%d) assigned to upstream %s", self.slot_id, self.port, url)
 
     async def swap_upstream(self, reason: str = "error") -> bool:
@@ -544,19 +570,17 @@ class GatewayServer:
         """Live terminal dashboard if running interactively."""
         while self._running:
             if sys.stdout.isatty():
-                # ANSI clear screen & move to top
-                sys.stdout.write("\033[2J\033[H")
-                sys.stdout.write(f"=== p-rox Local Proxy Gateway ({len(self.slots)} slots on {self.host}) ===\n")
-                sys.stdout.write(f"Target: {self.target_site or 'All Sites'}\n")
-                sys.stdout.write(f"{'Slot':<6} {'Port':<8} {'Status':<10} {'Country':<8} {'Active':<8} {'Traffic (KB)':<14} {'Upstream Proxy'}\n")
-                sys.stdout.write("-" * 80 + "\n")
-                for s in self.slots:
-                    kb = (s.stats.bytes_received + s.stats.bytes_sent) / 1024
-                    sys.stdout.write(
-                        f"{s.slot_id:<6} {s.port:<8} {s.stats.status:<10} {s.stats.country or 'N/A':<8} "
-                        f"{s.stats.connections_active:<8} {kb:<14.1f} {s.stats.upstream}\n"
-                    )
-                sys.stdout.write("\nPress Ctrl+C to stop.\n")
+                pool_stats = {
+                    "L0 Candidates": len(self.pool.proxies),
+                    "L1 Live": len(self.pool.tier1),
+                }
+                dashboard_text = TerminalDashboard.render_gateway_dashboard(
+                    slots=self.slots,
+                    host=self.host,
+                    target_site=self.target_site,
+                    pool_stats=pool_stats,
+                )
+                sys.stdout.write(dashboard_text)
                 sys.stdout.flush()
             await asyncio.sleep(2.0)
 

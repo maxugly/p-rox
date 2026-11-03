@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote, unquote, urlsplit
 
-from .models import Proxy
+from .models import GeoLocation, LatencyMetrics, Proxy, ProxyProfile, SecurityMetrics
 
 logger = logging.getLogger("proxy_collector.pool")
 
@@ -104,10 +104,16 @@ class ProxyPool:
         with self.lock:
             self.leases = ProxyLeases(self)
 
-    def _key(self, scheme: str, host: str, port: str | int, user: str = "") -> str:
+    @staticmethod
+    def _key(scheme: str, host: str, port: str | int, user: str = "") -> str:
         """Canonical key for tracking a proxy endpoint in health storage."""
         auth = f"{user}@" if user else ""
         return f"{scheme.lower()}://{auth}{host.lower()}:{port}"
+
+    @classmethod
+    def _proxy_key(cls, p: Dict[str, Any]) -> str:
+        """Canonical key from a proxy dict."""
+        return cls._key(p.get("scheme", "http"), p.get("host", ""), p.get("port", ""), p.get("user", ""))
 
     def _load_premium_file(self, path: Path):
         """Load user-supplied authenticated proxies (tier: premium)."""
@@ -393,6 +399,79 @@ class ProxyPool:
 
         if self.leases:
             self.leases.notify(p)
+
+    def apply_profile(self, profile: ProxyProfile):
+        """Record a completed ProxyProfile into the health store and promote tiers."""
+        p_dict = profile.proxy.as_pool_dict()
+        key = self._key(profile.proxy.scheme, profile.proxy.host, profile.proxy.port, profile.proxy.username)
+        with self.lock:
+            h = self.health.setdefault(key, {})
+            if profile.egress_ip:
+                h["egress"] = profile.egress_ip
+            if profile.geo:
+                h["geo"] = profile.geo.to_dict()
+            if profile.latency:
+                h["latency"] = profile.latency.to_dict()
+            if profile.security:
+                h["security"] = profile.security.to_dict()
+
+            h["checked_at"] = time.time()
+            if profile.tier >= 1:
+                h["consec"] = 0
+                h["benched_until"] = 0.0
+
+            self._mark_dirty()
+
+        # Update in-memory entry if present
+        for p in self.proxies:
+            if self._key(p["scheme"], p["host"], p["port"], p.get("user")) == key:
+                if profile.geo and profile.geo.country_code:
+                    p["country"] = profile.geo.country_code
+                if profile.tier >= 1:
+                    p["fails"] = 0
+                    p["consec"] = 0
+                break
+
+    def get_profile(self, p: Dict[str, Any]) -> ProxyProfile:
+        """Construct a structured ProxyProfile from a pool proxy dictionary."""
+        proxy_obj = Proxy(
+            scheme=p.get("scheme", "http"),
+            host=p.get("host", ""),
+            port=int(p.get("port", 0)),
+            username=p.get("user") or None,
+            password=p.get("pass") or None,
+            country=p.get("country") or None,
+        )
+        key = self._key(proxy_obj.scheme, proxy_obj.host, proxy_obj.port, proxy_obj.username)
+        with self.lock:
+            h = self.health.get(key, {})
+            geo = GeoLocation.from_dict(h.get("geo")) if h.get("geo") else None
+            latency = LatencyMetrics.from_dict(h.get("latency")) if h.get("latency") else None
+            security = SecurityMetrics.from_dict(h.get("security")) if h.get("security") else None
+
+            # Calculate effective tier
+            r_tier, _ = self._rank(p)
+            effective_tier = 0
+            if r_tier == -1:
+                effective_tier = 3
+            elif r_tier == 0:
+                effective_tier = 2
+            elif r_tier == 1:
+                effective_tier = 1
+
+            return ProxyProfile(
+                proxy=proxy_obj,
+                egress_ip=h.get("egress"),
+                geo=geo,
+                latency=latency,
+                security=security,
+                tier=effective_tier,
+                fails=p.get("fails", 0),
+                consec=h.get("consec", 0),
+                benched_until=h.get("benched_until", 0.0),
+                last_tested=h.get("checked_at", 0.0),
+                last_reason=h.get("reason", ""),
+            )
 
     # -------------------------------------------------------------------------
     # Ranking, Rotation, and Selection

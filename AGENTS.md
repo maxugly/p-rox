@@ -90,18 +90,21 @@ p-rox/
 │   ├── __init__.py             # Public API exports & __version__
 │   ├── cli.py                  # CLI argument parser & subcommand actions
 │   ├── collector.py            # High-level orchestrator & pool ingestion bridge
+│   ├── dashboard.py            # Terminal ANSI dashboard layout & status formatters
 │   ├── deduplicator.py         # Zero-allocation streaming canonical deduplicator
 │   ├── fetcher.py              # Parallel feed downloader with atomic .tmp swap & cache
 │   ├── gateway.py              # Asyncio forward proxy gateway server & slot manager
+│   ├── geoip.py                # Fast binary MMDB resolver (DB-IP Lite & MaxMind GeoLite2)
 │   ├── leases.py               # Exclusive per-site proxy lease manager by egress IP
-│   ├── models.py               # Data structures: Proxy, Feed, FetchResult, Stats
+│   ├── models.py               # Data structures: Proxy, GeoLocation, Metrics, Profile
 │   ├── monitor.py              # Background qualification workers (L1 Route & L2 Site)
 │   ├── parsers.py              # Multi-format streaming line and JSON parsers
 │   ├── pool.py                 # 4-tier pool, circuit breaker, & health persistence
+│   ├── profiler.py             # Dual-ping latency, anonymity tiering, and TLS tampering checks
 │   ├── routing.py              # Leased RoutedSession (requests.Session subclass)
 │   ├── service.py              # Coordination layer with fcntl.flock concurrency locks
 │   └── sources.py              # Catalog of 52 verified feeds across 9 providers
-├── tests/                      # Fast offline test suite (42 tests, <0.4s)
+├── tests/                      # Fast offline test suite (58 tests, <0.5s)
 ├── AGENTS.md                   # This file (Agent briefing & architectural rules)
 ├── pyproject.toml              # Package configuration & entry points
 └── README.md                   # Technical reference manual & documentation

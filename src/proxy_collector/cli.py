@@ -8,7 +8,12 @@ import time
 from pathlib import Path
 
 from .collector import ProxyCollector
-from .models import STANDARD_SCHEMES
+from .dashboard import TerminalDashboard
+from .geoip import GeoIPResolver, download_dbip_lite, download_maxmind_geolite2
+from .models import STANDARD_SCHEMES, Proxy
+from .parsers import parse_line
+from .pool import ProxyPool
+from .profiler import ProxyProfiler
 from .service import ProxyService
 
 
@@ -250,6 +255,80 @@ def cmd_gateway(args):
         loop.close()
 
 
+def cmd_update_geoip(args):
+    """Download and install GeoIP database (DB-IP Lite or MaxMind GeoLite2)."""
+    cache_dir = Path(args.cache_dir) if args.cache_dir else None
+    source = args.source.lower().strip()
+
+    if source == "dbip":
+        print("Downloading free DB-IP City Lite database (CC-BY-4.0)...")
+        try:
+            path = download_dbip_lite(cache_dir=cache_dir)
+            print(f"Successfully installed DB-IP Lite to {path}")
+        except Exception as e:
+            print(f"Error downloading DB-IP Lite: {e}")
+            sys.exit(1)
+    elif source == "maxmind":
+        key = args.license_key or os.environ.get("MAXMIND_LICENSE_KEY")
+        if not key:
+            print("Error: MaxMind license key is required.")
+            print("Provide it via --license-key <KEY> or export MAXMIND_LICENSE_KEY=<KEY>")
+            print("Free signup: https://www.maxmind.com/en/geolite2/signup")
+            sys.exit(1)
+        print("Downloading MaxMind GeoLite2-City database...")
+        try:
+            path = download_maxmind_geolite2(license_key=key, cache_dir=cache_dir)
+            print(f"Successfully installed MaxMind GeoLite2 to {path}")
+        except Exception as e:
+            print(f"Error downloading MaxMind GeoLite2: {e}")
+            sys.exit(1)
+    else:
+        print(f"Unknown GeoIP source: {source}. Choose 'dbip' or 'maxmind'.")
+        sys.exit(1)
+
+
+def cmd_profile(args):
+    """Benchmark and profile proxies (Dual-ping, Egress IP, GeoIP, Anonymity, TLS)."""
+    cache_dir = Path(args.cache_dir) if args.cache_dir else None
+    geoip = GeoIPResolver(cache_dir=cache_dir)
+    profiler = ProxyProfiler(geoip_resolver=geoip, timeout=args.timeout)
+
+    if args.proxy:
+        p_obj = parse_line(args.proxy)
+        if not p_obj:
+            print(f"Error: Could not parse proxy string '{args.proxy}'")
+            sys.exit(1)
+        print(f"Profiling proxy {p_obj.url}...")
+        profile = profiler.profile(p_obj)
+        TerminalDashboard.print_profile_card(profile)
+        return
+
+    # Profile batch from pool
+    pool = ProxyPool(cache_dir=cache_dir)
+    if not pool.proxies:
+        print("Pool is currently empty. Run 'p-rox update-pool' or 'p-rox collect' first.")
+        return
+
+    limit = min(args.limit, len(pool.proxies))
+    candidates = pool.proxies[:limit]
+    print(f"Profiling {limit} candidates from pool with GeoIP and Dual-Ping metrics...")
+
+    for i, c in enumerate(candidates, 1):
+        p_obj = Proxy(
+            scheme=c.get("scheme", "http"),
+            host=c.get("host", ""),
+            port=int(c.get("port", 0)),
+            username=c.get("user") or None,
+            password=c.get("pass") or None,
+        )
+        profile = profiler.profile(p_obj)
+        pool.apply_profile(profile)
+        TerminalDashboard.print_profile_card(profile)
+
+    pool.flush_health()
+    print(f"\nCompleted profiling for {limit} proxies. Health cache flushed to {pool.health_path}.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="p-rox: High-performance proxy acquisition, qualification, and routing engine")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
@@ -326,6 +405,21 @@ def main():
     p_gateway.add_argument("--status", action="store_true", help="Query status of running gateway slots")
     p_gateway.add_argument("--gen-runit", type=str, default=None, help="Generate a Void Linux runit service script at PATH")
     p_gateway.set_defaults(func=cmd_gateway)
+
+    # update-geoip command
+    p_geoip = subparsers.add_parser("update-geoip", help="Download and install GeoIP database (DB-IP Lite or MaxMind)")
+    p_geoip.add_argument("--source", type=str, default="dbip", choices=["dbip", "maxmind"], help="GeoIP source (default: dbip)")
+    p_geoip.add_argument("--license-key", type=str, default=None, help="MaxMind account license key (if source is maxmind)")
+    p_geoip.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
+    p_geoip.set_defaults(func=cmd_update_geoip)
+
+    # profile command
+    p_prof = subparsers.add_parser("profile", help="Benchmark and profile proxy (Dual-Ping, GeoIP, Anonymity, TLS)")
+    p_prof.add_argument("--proxy", type=str, default=None, help="Single proxy URI to profile (e.g. http://1.2.3.4:8080)")
+    p_prof.add_argument("--limit", type=int, default=10, help="Number of pool candidates to profile (default: 10)")
+    p_prof.add_argument("--timeout", type=float, default=6.0, help="Socket timeout per test (default: 6.0s)")
+    p_prof.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
+    p_prof.set_defaults(func=cmd_profile)
 
     args = parser.parse_args()
     setup_logging(args.verbose)
