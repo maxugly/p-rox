@@ -225,6 +225,7 @@ def cmd_run(args):
         if not serve_enabled or not server or slot_index >= len(server.slots):
             return
         with view_lock:
+            menu_state["prev_view"] = active_view[0]
             active_view[0] = VIEW_SLOT_MENU
             menu_state["slot_id"] = slot_index
             menu_state["slot_num"] = slot_index + 1
@@ -246,17 +247,27 @@ def cmd_run(args):
                 selected_code = f_items[cur_idx]["code"]
                 slot.set_country_filter(selected_code)
         with view_lock:
-            active_view[0] = VIEW_SERVER
-            sys.stdout.write("\033[r\033[2J\033[H")
-            sys.stdout.flush()
-            _draw_server_view()
+            prev = menu_state.get("prev_view", VIEW_SERVER)
+            active_view[0] = prev
+            if prev == VIEW_MONITOR:
+                terminal.init_terminal()
+                _draw_monitor_header()
+            else:
+                sys.stdout.write("\033[r\033[2J\033[H")
+                sys.stdout.flush()
+                _draw_server_view()
 
     def exit_slot_menu():
         with view_lock:
-            active_view[0] = VIEW_SERVER
-            sys.stdout.write("\033[r\033[2J\033[H")
-            sys.stdout.flush()
-            _draw_server_view()
+            prev = menu_state.get("prev_view", VIEW_SERVER)
+            active_view[0] = prev
+            if prev == VIEW_MONITOR:
+                terminal.init_terminal()
+                _draw_monitor_header()
+            else:
+                sys.stdout.write("\033[r\033[2J\033[H")
+                sys.stdout.flush()
+                _draw_server_view()
 
     def toggle_view():
         if not serve_enabled or not terminal.enabled:
@@ -357,14 +368,25 @@ def cmd_run(args):
             return
 
         try:
-            tty.setcbreak(sys.stdin.fileno())
+            fd = sys.stdin.fileno()
+            tty.setcbreak(fd)
             while not stop_event.is_set():
-                r, _, _ = select.select([sys.stdin], [], [], 0.2)
+                r, _, _ = select.select([fd], [], [], 0.2)
                 if stop_event.is_set():
                     break
                 if r:
-                    ch = sys.stdin.read(1)
+                    raw_bytes = os.read(fd, 32)
+                    if not raw_bytes:
+                        continue
+
+                    # If starting with ESC and sequence is incomplete, wait for trailing bytes
+                    if raw_bytes.startswith(b"\x1b") and len(raw_bytes) < 3:
+                        r_more, _, _ = select.select([fd], [], [], 0.05)
+                        if r_more:
+                            raw_bytes += os.read(fd, 32)
+
                     if active_view[0] in (VIEW_SERVER, VIEW_MONITOR):
+                        ch = raw_bytes.decode("utf-8", errors="ignore")
                         if ch in ("s", "S"):
                             toggle_view()
                         elif ch in ("+", "="):
@@ -377,70 +399,121 @@ def cmd_run(args):
                         elif ch == "0":
                             open_slot_menu(9)
                     elif active_view[0] == VIEW_SLOT_MENU:
-                        if ch == "\x1b":
-                            r2, _, _ = select.select([sys.stdin], [], [], 0.05)
-                            if r2:
-                                ch2 = sys.stdin.read(1)
-                                if ch2 == "[":
-                                    r3, _, _ = select.select([sys.stdin], [], [], 0.05)
-                                    if r3:
-                                        ch3 = sys.stdin.read(1)
-                                        cols, _ = shutil.get_terminal_size(fallback=(100, 30))
-                                        sep_len = max(80, min(cols, 140))
-                                        grid_cols = max(1, min(sep_len // 20, 8))
-                                        f_len = len(menu_state["filtered_items"])
-                                        cur = menu_state["cursor_index"]
-                                        if ch3 == "A":  # Up
-                                            if cur == -1:
-                                                pass
-                                            elif cur < grid_cols:
-                                                menu_state["cursor_index"] = -1
-                                            else:
-                                                menu_state["cursor_index"] = max(0, cur - grid_cols)
-                                        elif ch3 == "B":  # Down
-                                            if cur == -1:
-                                                menu_state["cursor_index"] = 0
-                                            else:
-                                                menu_state["cursor_index"] = min(f_len - 1, cur + grid_cols)
-                                        elif ch3 == "C":  # Right
-                                            if cur == -1:
-                                                menu_state["cursor_index"] = 0
-                                            else:
-                                                menu_state["cursor_index"] = min(f_len - 1, cur + 1)
-                                        elif ch3 == "D":  # Left
-                                            if cur == 0:
-                                                menu_state["cursor_index"] = -1
-                                            elif cur > 0:
-                                                menu_state["cursor_index"] = cur - 1
-                                        with view_lock:
-                                            _draw_slot_menu_view()
+                        if raw_bytes in (b"\x1b[A", b"\x1bOA"):  # Arrow Up
+                            cols, _ = shutil.get_terminal_size(fallback=(100, 30))
+                            sep_len = max(80, min(cols, 140))
+                            grid_cols = max(1, min(sep_len // 20, 8))
+                            cur = menu_state["cursor_index"]
+                            if cur == -1:
+                                pass
+                            elif cur < grid_cols:
+                                menu_state["cursor_index"] = -1
                             else:
-                                if menu_state["query"]:
-                                    menu_state["query"] = ""
-                                    menu_state["cursor_index"] = 0
-                                    with view_lock:
-                                        _draw_slot_menu_view()
-                                else:
-                                    exit_slot_menu()
-                        elif ch in ("q", "Q"):
+                                menu_state["cursor_index"] = max(0, cur - grid_cols)
+                            with view_lock:
+                                _draw_slot_menu_view()
+                        elif raw_bytes in (b"\x1b[B", b"\x1bOB"):  # Arrow Down
+                            cols, _ = shutil.get_terminal_size(fallback=(100, 30))
+                            sep_len = max(80, min(cols, 140))
+                            grid_cols = max(1, min(sep_len // 20, 8))
+                            f_len = len(menu_state["filtered_items"])
+                            cur = menu_state["cursor_index"]
+                            if f_len == 0:
+                                menu_state["cursor_index"] = -1
+                            elif cur == -1:
+                                menu_state["cursor_index"] = 0
+                            else:
+                                menu_state["cursor_index"] = min(f_len - 1, cur + grid_cols)
+                            with view_lock:
+                                _draw_slot_menu_view()
+                        elif raw_bytes in (b"\x1b[C", b"\x1bOC"):  # Arrow Right
+                            f_len = len(menu_state["filtered_items"])
+                            cur = menu_state["cursor_index"]
+                            if f_len == 0:
+                                menu_state["cursor_index"] = -1
+                            elif cur == -1:
+                                menu_state["cursor_index"] = 0
+                            else:
+                                menu_state["cursor_index"] = min(f_len - 1, cur + 1)
+                            with view_lock:
+                                _draw_slot_menu_view()
+                        elif raw_bytes in (b"\x1b[D", b"\x1bOD"):  # Arrow Left
+                            cur = menu_state["cursor_index"]
+                            if cur == 0:
+                                menu_state["cursor_index"] = -1
+                            elif cur > 0:
+                                menu_state["cursor_index"] = cur - 1
+                            with view_lock:
+                                _draw_slot_menu_view()
+                        elif raw_bytes in (b"\x1b[5~", b"\x1b[[5~"):  # Page Up
+                            cols, _ = shutil.get_terminal_size(fallback=(100, 30))
+                            sep_len = max(80, min(cols, 140))
+                            grid_cols = max(1, min(sep_len // 20, 8))
+                            step = grid_cols * 8
+                            cur = menu_state["cursor_index"]
+                            if cur <= step:
+                                menu_state["cursor_index"] = -1
+                            else:
+                                menu_state["cursor_index"] = max(0, cur - step)
+                            with view_lock:
+                                _draw_slot_menu_view()
+                        elif raw_bytes in (b"\x1b[6~", b"\x1b[[6~"):  # Page Down
+                            cols, _ = shutil.get_terminal_size(fallback=(100, 30))
+                            sep_len = max(80, min(cols, 140))
+                            grid_cols = max(1, min(sep_len // 20, 8))
+                            step = grid_cols * 8
+                            f_len = len(menu_state["filtered_items"])
+                            cur = menu_state["cursor_index"]
+                            if f_len == 0:
+                                menu_state["cursor_index"] = -1
+                            elif cur == -1:
+                                menu_state["cursor_index"] = min(f_len - 1, step)
+                            else:
+                                menu_state["cursor_index"] = min(f_len - 1, cur + step)
+                            with view_lock:
+                                _draw_slot_menu_view()
+                        elif raw_bytes in (b"\x1b[H", b"\x1b[1~"):  # Home
+                            menu_state["cursor_index"] = -1
+                            with view_lock:
+                                _draw_slot_menu_view()
+                        elif raw_bytes in (b"\x1b[F", b"\x1b[4~"):  # End
+                            f_len = len(menu_state["filtered_items"])
+                            if f_len > 0:
+                                menu_state["cursor_index"] = f_len - 1
+                            with view_lock:
+                                _draw_slot_menu_view()
+                        elif raw_bytes == b"\x1b":  # Standalone ESC
+                            if menu_state["query"]:
+                                menu_state["query"] = ""
+                                menu_state["cursor_index"] = 0
+                                with view_lock:
+                                    _draw_slot_menu_view()
+                            else:
+                                exit_slot_menu()
+                        elif raw_bytes in (b"q", b"Q"):
                             exit_slot_menu()
-                        elif ch in ("\r", "\n"):
+                        elif raw_bytes in (b"\r", b"\n"):
                             confirm_menu_selection()
-                        elif ch in ("\x7f", "\x08"):
+                        elif raw_bytes in (b"\x7f", b"\x08"):
                             if menu_state["query"]:
                                 menu_state["query"] = menu_state["query"][:-1]
                                 menu_state["cursor_index"] = 0
                                 with view_lock:
                                     _draw_slot_menu_view()
-                        elif ch == "0" and not menu_state["query"]:
-                            menu_state["cursor_index"] = -1
-                            with view_lock:
-                                _draw_slot_menu_view()
-                        elif ch.isalnum():
-                            menu_state["query"] += ch.upper()
-                            menu_state["cursor_index"] = 0
-                            with view_lock:
-                                _draw_slot_menu_view()
+                        elif raw_bytes.startswith(b"\x1b"):
+                            # Unhandled ANSI escape sequence - ignore safely so it never corrupts search query
+                            pass
+                        else:
+                            text = raw_bytes.decode("utf-8", errors="ignore")
+                            if text == "0" and not menu_state["query"]:
+                                menu_state["cursor_index"] = -1
+                                with view_lock:
+                                    _draw_slot_menu_view()
+                            elif len(text) == 1 and text.isalnum():
+                                menu_state["query"] += text.upper()
+                                menu_state["cursor_index"] = 0
+                                with view_lock:
+                                    _draw_slot_menu_view()
         except Exception:
             pass
         finally:

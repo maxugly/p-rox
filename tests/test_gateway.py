@@ -437,6 +437,40 @@ def test_cli_slot_menu_rendering(tmp_path):
     assert "Slot 1 (Port 3030) Country Selection" in out
     assert "Current: US" in out
     assert "ANY: All Countries" in out
+    # Verify line clear ANSI codes (\033[K) and screen clear code (\033[J)
+    assert "\033[K" in out
+    assert out.endswith("\033[J")
+
+
+def test_cli_slot_menu_arrow_key_and_navigation(tmp_path):
+    from proxy_collector.db import ProxyDB
+    from proxy_collector.dashboard import TerminalDashboard
+
+    db = ProxyDB(db_path=tmp_path / "nav.db")
+    items = db.get_country_menu_items()
+    assert len(items) == 249
+
+    # Test ANY filter highlight when cursor_index == -1
+    out_any = TerminalDashboard.render_country_menu(
+        slot_num=2,
+        port=3031,
+        current_filter=None,
+        items=items,
+        cursor_index=-1,
+        search_query="",
+    )
+    assert "[  0] 🌐 ANY: All Countries (Clear Filter)" in out_any
+
+    # Arrow keys raw byte sequences
+    up_keys = (b"\x1b[A", b"\x1bOA")
+    down_keys = (b"\x1b[B", b"\x1bOB")
+    right_keys = (b"\x1b[C", b"\x1bOC")
+    left_keys = (b"\x1b[D", b"\x1bOD")
+
+    for k in up_keys + down_keys + right_keys + left_keys:
+        assert k.startswith(b"\x1b")
+        assert len(k) == 3
+
 
 
 

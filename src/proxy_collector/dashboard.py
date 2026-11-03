@@ -501,8 +501,8 @@ class TerminalDashboard:
         """Render full-screen country selection grid for slot configuration."""
         lines = []
         cur_disp = current_filter or "ANY (All Countries)"
-        lines.append(f"\033[1;36m=== Slot {slot_num} (Port {port}) Country Selection ===\033[0m  \033[2m[Current: {cur_disp}]\033[0m")
-        lines.append("\033[2mSelect a country to lock this slot. Testing conveyor prioritizes live proxies for selected country.\033[0m")
+        lines.append(f"\033[1;36m=== Slot {slot_num} (Port {port}) Country Selection ===\033[0m  \033[2m[Current: {cur_disp}]\033[0m\033[K")
+        lines.append("\033[2mSelect a country to lock this slot. Testing conveyor prioritizes live proxies for selected country.\033[0m\033[K")
 
         q_disp = f"[{search_query}]" if search_query else "[Type country code or number]"
         is_any_cur = (cursor_index == -1)
@@ -512,15 +512,15 @@ class TerminalDashboard:
             f"   │   Filter: \033[1;97m{q_disp}\033[0m"
             f"   │   Matches: \033[1;32m{len(items)}\033[0m"
         )
-        lines.append(line3)
+        lines.append(line3 + "\033[K")
         sep_len = max(80, min(term_width, 140))
-        lines.append("─" * sep_len)
+        lines.append("─" * sep_len + "\033[K")
 
         cell_width = 20
         cols = max(1, min(sep_len // cell_width, 8))
         actual_cell_width = sep_len // cols
 
-        max_grid_rows = max(4, term_height - 6)
+        max_grid_rows = max(4, term_height - 7)
         total_rows = (len(items) + cols - 1) // cols if items else 0
 
         cursor_row = cursor_index // cols if (items and cursor_index >= 0) else 0
@@ -550,15 +550,15 @@ class TerminalDashboard:
                     else:
                         cell_str = f"\033[2;90m{core}\033[0m"
                     row_cells.append(cell_str)
-            lines.append("".join(row_cells))
+            lines.append("".join(row_cells) + "\033[K")
 
         rendered_rows = min(scroll_row + max_grid_rows, total_rows) - scroll_row
         for _ in range(max(0, max_grid_rows - rendered_rows)):
-            lines.append("")
+            lines.append("\033[K")
 
-        lines.append("─" * sep_len)
-        lines.append("\033[2mNav: [↑/↓/←/→] Move  │  [Enter] Select  │  [0] Clear Filter  │  [Backspace] Edit  │  [Esc/q] Cancel\033[0m\n")
-        return "\n".join(lines)
+        lines.append("─" * sep_len + "\033[K")
+        lines.append("\033[2mNav: [↑/↓/←/→] Move  │  [Enter] Select  │  [0] Clear Filter  │  [Backspace] Edit  │  [Esc/q] Cancel\033[0m\033[K")
+        return "\n".join(lines) + "\033[J"
 
     @staticmethod
     def print_profile_card(profile: Any):
