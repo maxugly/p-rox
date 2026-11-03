@@ -2,7 +2,9 @@
 
 import concurrent.futures
 import logging
+import queue
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -181,42 +183,162 @@ def run_continuous_worker(
     on_result: Optional[Callable[[Dict[str, Any], bool, Any], None]] = None,
     on_tick: Optional[Callable[[Dict[str, Any], float], None]] = None,
 ):
-    """Run continuous live testing loop maintaining fresh working proxies in SQLite."""
-    import threading
+    """Run continuous live testing loop maintaining fresh working proxies in SQLite.
 
+    Uses a continuous conveyor-belt queue with staggered worker start times
+    for steady throughput (eliminating batch pauses, bursts, and socket lockstep).
+    """
     stop = stop_event or threading.Event()
     resolver = GeoIPResolver()
+    profiler = ProxyProfiler(geoip_resolver=resolver, timeout=timeout)
+
+    q_capacity = max(50, workers * 2)
+    task_queue: queue.Queue = queue.Queue(maxsize=q_capacity)
+    result_queue: queue.Queue = queue.Queue(maxsize=q_capacity)
+
+    num_workers = max(1, workers)
     total_tested = 0
+    total_alive = 0
+    total_dead = 0
     session_died = 0
     start_time = time.monotonic()
+    last_tick_time = time.monotonic()
 
-    while not stop.is_set():
-        res = test_candidates(
-            db=db,
-            limit=batch_size,
-            workers=workers,
-            keepalive=keepalive,
-            timeout=timeout,
-            geoip_resolver=resolver,
-            on_result=on_result,
-        )
+    # Track currently queued URLs to avoid feeding duplicates while in-flight
+    in_flight: set = set()
+    in_flight_lock = threading.Lock()
 
-        batch_tested = res.get("tested", 0)
-        batch_dead = res.get("dead", 0)
-        session_died += batch_dead
-        total_tested += batch_tested
-        elapsed = time.monotonic() - start_time
-        rate = total_tested / elapsed if elapsed > 0 else 0.0
+    def _worker_loop(worker_id: int):
+        # Stagger start times so initial socket connections don't fire simultaneously
+        jitter = (worker_id % num_workers) * 0.05
+        if stop.wait(jitter):
+            return
 
-        if on_tick:
-            stats = db.get_stats()
-            stats["rate_per_sec"] = round(rate, 1)
-            stats["total_tested_session"] = total_tested
-            stats["session_died"] = session_died
-            stats["uptime_s"] = elapsed
-            on_tick(stats, rate)
+        while not stop.is_set():
+            try:
+                candidate = task_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
 
-        if batch_tested == 0:
-            # Idle sleep if no candidates due for check
-            stop.wait(2.0)
+            try:
+                p_obj = Proxy(
+                    scheme=candidate.get("scheme", "http"),
+                    host=candidate.get("host", ""),
+                    port=int(candidate.get("port", 0)),
+                    username=candidate.get("username") or None,
+                    password=candidate.get("password") or None,
+                    raw_uri=candidate.get("url"),
+                )
+                profile = profiler.profile(p_obj)
+                is_alive = bool(
+                    profile.tier > 0 and profile.egress_ip and profile.latency.tcp_handshake_ms < float("inf")
+                )
+                result_queue.put((candidate, is_alive, profile, p_obj.url))
+            except Exception as exc:
+                logger.debug("Worker %d profiling error: %s", worker_id, exc)
+            finally:
+                task_queue.task_done()
+
+    # Start persistent worker threads
+    for i in range(num_workers):
+        t = threading.Thread(target=_worker_loop, args=(i,), daemon=True)
+        t.start()
+
+    # Feeder: start by testing the last live proxies first!
+    first_feed = True
+
+    try:
+        while not stop.is_set():
+            # 1. Replenish task queue when it drops below worker capacity
+            if task_queue.qsize() < num_workers:
+                needed = q_capacity - task_queue.qsize()
+                if needed > 0:
+                    candidates = db.get_candidates_for_testing(
+                        limit=needed + len(in_flight),
+                        keepalive_seconds=keepalive,
+                        include_all_alive=first_feed,
+                    )
+                    first_feed = False
+                    with in_flight_lock:
+                        for c in candidates:
+                            u = c.get("url")
+                            if u and u not in in_flight:
+                                in_flight.add(u)
+                                try:
+                                    task_queue.put_nowait(c)
+                                except queue.Full:
+                                    break
+
+            # 2. Process results (single SQLite writer = zero lockups)
+            try:
+                candidate, is_alive, profile, target_url = result_queue.get(timeout=0.05)
+                with in_flight_lock:
+                    in_flight.discard(target_url)
+
+                total_tested += 1
+                if is_alive:
+                    total_alive += 1
+                else:
+                    total_dead += 1
+                    session_died += 1
+
+                # Save sequentially in SQLite
+                geo = profile.geo
+                country = f"{geo.country_code} ({geo.city})" if (geo and geo.city) else (geo.country_code if geo else None)
+                city = geo.city if geo else None
+                asn = geo.org if geo else None
+                anonymity = profile.security.anonymity if profile.security else "unknown"
+
+                db.record_test_result(
+                    url=target_url,
+                    is_alive=is_alive,
+                    latency_ms=profile.latency.tcp_handshake_ms if is_alive else None,
+                    ttfb_ms=profile.latency.http_ttfb_ms if is_alive else None,
+                    egress_ip=profile.egress_ip if is_alive else None,
+                    country=country,
+                    city=city,
+                    asn=asn,
+                    anonymity=anonymity,
+                )
+
+                if on_result:
+                    on_result(candidate, is_alive, profile)
+
+            except queue.Empty:
+                pass
+
+            # 3. Fire on_tick periodically
+            now = time.monotonic()
+            if on_tick and (now - last_tick_time >= 1.0):
+                last_tick_time = now
+                elapsed = now - start_time
+                rate = total_tested / elapsed if elapsed > 0 else 0.0
+                stats = db.get_stats()
+                stats["rate_per_sec"] = round(rate, 1)
+                stats["total_tested_session"] = total_tested
+                stats["session_died"] = session_died
+                stats["uptime_s"] = elapsed
+                on_tick(stats, rate)
+
+    finally:
+        stop.set()
+        # Cleanly drain any completed results
+        while not result_queue.empty():
+            try:
+                candidate, is_alive, profile, target_url = result_queue.get_nowait()
+                geo = profile.geo
+                country = f"{geo.country_code} ({geo.city})" if (geo and geo.city) else (geo.country_code if geo else None)
+                db.record_test_result(
+                    url=target_url,
+                    is_alive=is_alive,
+                    latency_ms=profile.latency.tcp_handshake_ms if is_alive else None,
+                    ttfb_ms=profile.latency.http_ttfb_ms if is_alive else None,
+                    egress_ip=profile.egress_ip if is_alive else None,
+                    country=country,
+                    city=geo.city if geo else None,
+                    asn=geo.org if geo else None,
+                    anonymity=profile.security.anonymity if profile.security else "unknown",
+                )
+            except queue.Empty:
+                break
 

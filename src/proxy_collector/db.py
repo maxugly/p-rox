@@ -112,9 +112,10 @@ class ProxyDB:
         self,
         limit: int = 100,
         keepalive_seconds: float = 180.0,
+        include_all_alive: bool = False,
     ) -> List[Dict[str, Any]]:
         """Fetch candidates prioritized for health checks:
-        1. Known ALIVE proxies due for 3-minute heartbeat re-check.
+        1. Known ALIVE proxies (last live proxies first if include_all_alive=True, else due for heartbeat).
         2. Fresh UNTESTED candidates (newest scraped IPs first).
         3. DEAD proxies due for retry (2-hour exponential backoff).
         """
@@ -124,17 +125,29 @@ class ProxyDB:
         results = []
 
         with self.get_connection() as conn:
-            # 1. Alive proxies due for keepalive heartbeat
-            alive_due = conn.execute(
-                """
-                SELECT id, scheme, host, port, username, password, url, status, fails, last_checked_at
-                FROM proxies
-                WHERE status = 'alive' AND (last_checked_at IS NULL OR last_checked_at < ?)
-                ORDER BY last_checked_at ASC
-                LIMIT ?
-                """,
-                (stale_threshold, limit),
-            ).fetchall()
+            # 1. Alive proxies:
+            if include_all_alive:
+                alive_due = conn.execute(
+                    """
+                    SELECT id, scheme, host, port, username, password, url, status, fails, last_checked_at
+                    FROM proxies
+                    WHERE status = 'alive'
+                    ORDER BY last_checked_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            else:
+                alive_due = conn.execute(
+                    """
+                    SELECT id, scheme, host, port, username, password, url, status, fails, last_checked_at
+                    FROM proxies
+                    WHERE status = 'alive' AND (last_checked_at IS NULL OR last_checked_at < ?)
+                    ORDER BY last_checked_at ASC
+                    LIMIT ?
+                    """,
+                    (stale_threshold, limit),
+                ).fetchall()
             results.extend([dict(r) for r in alive_due])
 
             # 2. Fresh untested candidates

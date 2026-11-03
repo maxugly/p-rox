@@ -102,6 +102,21 @@ def test_proxydb_keepalive_priority_and_reset(tmp_path):
     assert candidates[0]["url"] == p1.url  # Heartbeat priority!
     assert candidates[1]["url"] == p2.url  # Fresh untested candidate
 
+    # Test include_all_alive=True returns recently verified alive proxies first
+    recent_time = time.time() - 10.0  # only 10s ago, not stale!
+    with db.get_connection() as conn:
+        conn.execute("UPDATE proxies SET last_checked_at = ? WHERE url = ?", (recent_time, p1.url))
+
+    # Without include_all_alive, p1 is skipped because < 180s
+    c_normal = db.get_candidates_for_testing(limit=10, keepalive_seconds=180.0, include_all_alive=False)
+    assert len(c_normal) == 1
+    assert c_normal[0]["url"] == p2.url
+
+    # With include_all_alive, p1 is prioritized first (last live proxy)
+    c_all_alive = db.get_candidates_for_testing(limit=10, keepalive_seconds=180.0, include_all_alive=True)
+    assert len(c_all_alive) == 2
+    assert c_all_alive[0]["url"] == p1.url
+
     # Test reset_pool
     db.reset_pool(clear_all=False)
     stats = db.get_stats()
