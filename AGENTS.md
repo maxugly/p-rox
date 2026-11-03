@@ -85,10 +85,11 @@ Do not bypass or modify the exponential circuit breaker quarantine discipline in
   - **`'-'` / `'_'`**: Dynamically stops and pops the highest numbered proxy slot (minimum 1 slot bound).
 - Never introduce multi-key menus, sub-prompts, or blocking stdin readers that halt the background testing or asyncio gateway loops.
 
-### 8. Truthful Slot Allocation & Survival Duration
+### 8. Truthful Slot Allocation, Survival Duration, & Per-Port Telemetry
 - Gateway slots bind exclusively to verified alive proxies from SQLite (`status = 'alive'`).
 - If fewer alive proxies exist than requested slots, surplus slots must truthfully display `status = 'waiting'` and `upstream = 'none (pool warming)'` rather than looping over identical proxies or faking health.
-- Proxy survival duration (`Alive Time`) is tracked continuously using SQLite `first_seen_alive`.
+- Proxy survival duration (`Alive Time`) is tracked continuously down to the second (`1h 05m 23s`) using SQLite `first_seen_alive`.
+- Each proxy slot tracks per-port transfer speeds (`Speed (▲/▼)`), cumulative transferred traffic (`Traffic (▲/▼)`), and active/total connection counts (`Conns`).
 
 ### 9. Immediate GeoIP Calculation & Background Resolution Thread
 - Country geolocation, city, and ASN metadata are calculated immediately upon candidate ingestion (`upsert_batch`) using local microsecond MMDB lookups and in-memory caching.
@@ -124,7 +125,7 @@ p-rox/
 │   ├── routing.py              # Leased RoutedSession (requests.Session subclass)
 │   ├── service.py              # Coordination layer with fcntl.flock concurrency locks
 │   └── sources.py              # Catalog of 52 verified feeds across 9 providers
-├── tests/                      # Fast offline test suite (91 tests, <1s)
+├── tests/                      # Fast offline test suite (92 tests, <1s)
 ├── AGENTS.md                   # This file (Agent briefing & architectural rules)
 ├── pyproject.toml              # Package configuration & entry points
 └── README.md                   # Technical reference manual & documentation

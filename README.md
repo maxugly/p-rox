@@ -149,7 +149,7 @@ While running with `--serve`, single keystrokes control the engine instantly wit
 - **`Ctrl+C`**: Cleanly shuts down all socket servers, drains completed work, and restores terminal scrolling margins.
 
 #### Gateway Server Screen
-Pressing `s` switches into the live server screen, showing connection URLs, proxy survival times (`Alive`), flags, latencies, and traffic:
+Pressing `s` switches into the live server screen, showing connection URLs, proxy survival times down to the second (`Alive`), transfer speeds (`Speed ▲/▼`), cumulative traffic (`Traffic ▲/▼`), connection counts (`Conns`), flags, latencies, and upstreams:
 ```text
 === p-rox Local Proxy Gateway (10 slots on 127.0.0.1) ===
 GitHub: https://github.com/maxugly/p-rox
@@ -158,19 +158,19 @@ Example Usage:      curl -x http://127.0.0.1:3030 https://httpbin.org/ip
 Pool Summary:       Total: 2,050,404 │ Alive: 711 │ Untested: 2,044,451
 Toggle View: [s] Switch to Pool Monitor  │  [+] Add Port  │  [-] Remove Port  │  [Ctrl+C] Stop
 
-Slot  Port    Status     Location           Alive     Anon    Ping (TCP/TTFB)  Active  KB       Upstream
-────────────────────────────────────────────────────────────────────────────────────────────────────
-0     3030    healthy    🇸🇬 SG              2h 16m    elite   242ms / 9677ms   0       0.0      https://23.106.249.54:6550
-1     3031    healthy    🇧🇩 BD              1h 36m    elite   305ms TCP        0       0.0      http://115.127.31.66:8080
-2     3032    healthy    🇨🇳 CN (Beijing)    34m 31s   elite   229ms / 8139ms   0       0.0      socks5://47.92.219.102:8085
-3     3033    healthy    🇨🇳 CN              2h 16m    elite   266ms / 3510ms   0       0.0      https://117.82.138.100:1080
-4     3034    healthy    🇺🇸 US (Seattle)    2h 02m    elite   162ms / 3423ms   0       0.0      https://45.150.164.23:8443
-5     3035    healthy    🇱🇹 LT              2h 13m    elite   172ms / 3342ms   0       0.0      https://89.124.8.83:443
-6     3036    healthy    🇩🇪 DE (Frankfurt … 2h 02m    unknow  243ms / 2583ms   0       0.0      https://64.31.39.228:443
-7     3037    healthy    🇱🇻 LV (Riga)       2h 16m    elite   140ms / 1962ms   0       0.0      https://89.111.28.78:443
-8     3038    healthy    🇭🇰 HK (Hong Kong)  59m 24s   unknow  268ms TCP        0       0.0      socks5://165.154.20.187:108…
-9     3039    healthy    🇺🇸 US (Seattle)    2h 02m    elite   185ms / 2509ms   0       0.0      https://45.150.164.14:8443
-────────────────────────────────────────────────────────────────────────────────────────────────────
+Slot  Port   Status    Location         Alive       Speed (▲/▼)        Traffic (▲/▼)      Conns    Ping (TCP/TTFB)  Upstream
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+0     3030   healthy   🇸🇬 SG            2h 16m 42s  14.2KB/s / 48.6KB/s 1.2MB / 4.8MB     2 (14)   242ms / 9677ms   https://23.106.249.54:6550
+1     3031   healthy   🇧🇩 BD            1h 36m 15s  0B/s / 0B/s        120KB / 450KB      0 (3)    305ms TCP        http://115.127.31.66:8080
+2     3032   healthy   🇨🇳 CN (Beijing)  34m 31s     2.1KB/s / 18.4KB/s 45KB / 320KB       1 (5)    229ms / 8139ms   socks5://47.92.219.102:8085
+3     3033   healthy   🇨🇳 CN            2h 16m 42s  0B/s / 0B/s        85KB / 512KB       0 (8)    266ms / 3510ms   https://117.82.138.100:1080
+4     3034   healthy   🇺🇸 US (Seattle)  2h 02m 09s  5.4KB/s / 62.1KB/s 520KB / 3.4MB      1 (22)   162ms / 3423ms   https://45.150.164.23:8443
+5     3035   healthy   🇱🇹 LT            2h 13m 50s  0B/s / 0B/s        12KB / 88KB        0 (2)    172ms / 3342ms   https://89.124.8.83:443
+6     3036   healthy   🇩🇪 DE (Frankfurt 2h 02m 09s  0B/s / 0B/s        210KB / 1.1MB      0 (9)    243ms / 2583ms   https://64.31.39.228:443
+7     3037   healthy   🇱🇻 LV (Riga)     2h 16m 42s  1.0KB/s / 12.0KB/s 64KB / 480KB       1 (7)    140ms / 1962ms   https://89.111.28.78:443
+8     3038   healthy   🇭🇰 HK (Hong Kong 59m 24s     0B/s / 0B/s        0B / 0B            0 (0)    268ms TCP        socks5://165.154.20.187:108…
+9     3039   healthy   🇺🇸 US (Seattle)  2h 02m 09s  0B/s / 0B/s        180KB / 950KB      0 (11)   185ms / 2509ms   https://45.150.164.14:8443
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Hotkeys: [s] toggle monitor/server │ [+] add proxy slot │ [-] remove proxy slot │ Ctrl+C stop
 ```
 
@@ -279,7 +279,7 @@ The test suite runs completely offline without making outbound network requests:
 pytest -v
 ```
 
-All 91 tests execute in under 1 second.
+All 92 tests execute in under 1 second.
 
 ---
 

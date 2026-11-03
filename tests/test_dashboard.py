@@ -22,8 +22,11 @@ def test_render_gateway_dashboard():
     mock_slot.stats.tcp_ms = 45.2
     mock_slot.stats.ttfb_ms = 120.5
     mock_slot.stats.connections_active = 2
+    mock_slot.stats.connections_total = 10
     mock_slot.stats.bytes_received = 10240
     mock_slot.stats.bytes_sent = 5120
+    mock_slot.stats.bps_sent = 1024.0
+    mock_slot.stats.bps_received = 2048.0
     mock_slot.stats.upstream = "http://185.220.101.4:9050"
 
     output = TerminalDashboard.render_gateway_dashboard(
@@ -37,6 +40,9 @@ def test_render_gateway_dashboard():
     assert "3030" in output
     assert "DE Frankfurt" in output
     assert "45ms / 120ms" in output
+    assert "1.0KB/s / 2.0KB/s" in output
+    assert "5.0KB / 10.0KB" in output
+    assert "2 (10)" in output
     assert "http://185.220.101.4:9050" in output
 
 
@@ -111,14 +117,25 @@ def test_print_profile_card(capsys):
 def test_format_helpers():
     from proxy_collector.dashboard import (
         country_code_to_flag,
+        format_bytes,
         format_duration,
+        format_rate,
         format_uptime,
         visible_len,
     )
 
     assert format_duration(45) == "45s"
     assert format_duration(125) == "2m 05s"
-    assert format_duration(3665) == "1h 01m"
+    assert format_duration(3665) == "1h 01m 05s"
+    assert format_duration(7325) == "2h 02m 05s"
+
+    assert format_bytes(500) == "500B"
+    assert format_bytes(2048) == "2.0KB"
+    assert format_bytes(1048576 * 2.5) == "2.5MB"
+    assert format_bytes(1073741824 * 1.5) == "1.50GB"
+
+    assert format_rate(1024) == "1.0KB/s"
+    assert format_rate(0) == "0B/s"
 
     assert format_uptime(45) == "00:00:45"
     assert format_uptime(125) == "00:02:05"

@@ -39,6 +39,11 @@ class SlotStats:
     connections_active: int = 0
     bytes_sent: int = 0
     bytes_received: int = 0
+    bps_sent: float = 0.0
+    bps_received: float = 0.0
+    _last_bytes_sent: int = 0
+    _last_bytes_received: int = 0
+    _last_rate_calc_at: float = field(default_factory=time.time)
     errors_total: int = 0
     anonymity: str = "unknown"
     tcp_ms: Optional[float] = None
@@ -47,6 +52,17 @@ class SlotStats:
     first_seen_alive: Optional[float] = None
     last_swapped_at: float = field(default_factory=time.time)
     last_active_at: float = field(default_factory=time.time)
+
+    def update_rates(self, now: Optional[float] = None):
+        """Calculate upload and download transfer rates (bytes/second)."""
+        current_time = now or time.time()
+        elapsed = current_time - self._last_rate_calc_at
+        if elapsed >= 0.5:
+            self.bps_sent = max(0.0, (self.bytes_sent - self._last_bytes_sent) / elapsed)
+            self.bps_received = max(0.0, (self.bytes_received - self._last_bytes_received) / elapsed)
+            self._last_bytes_sent = self.bytes_sent
+            self._last_bytes_received = self.bytes_received
+            self._last_rate_calc_at = current_time
 
 
 class ProxySlot:
@@ -658,6 +674,12 @@ class GatewayServer:
 
     def _save_status_snapshot(self):
         """Write live slot status to gateway_status.json."""
+        for s in self.slots:
+            if hasattr(s.stats, "update_rates"):
+                try:
+                    s.stats.update_rates()
+                except Exception:
+                    pass
         snapshot = {
             "updated_at": time.time(),
             "host": self.host,

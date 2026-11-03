@@ -15,7 +15,7 @@ def visible_len(text: str) -> int:
 
 
 def format_duration(seconds: float) -> str:
-    """Format duration in seconds into human-readable compact string."""
+    """Format duration in seconds into human-readable compact string down to the second."""
     s = int(max(0, seconds))
     if s < 60:
         return f"{s}s"
@@ -25,7 +25,25 @@ def format_duration(seconds: float) -> str:
     else:
         h, rem = divmod(s, 3600)
         m, sec = divmod(rem, 60)
-        return f"{h}h {m:02d}m"
+        return f"{h}h {m:02d}m {sec:02d}s"
+
+
+def format_bytes(num_bytes: float) -> str:
+    """Format bytes into compact human-readable string (B, KB, MB, GB)."""
+    b = float(max(0, num_bytes))
+    if b < 1024:
+        return f"{int(b)}B"
+    elif b < 1024 * 1024:
+        return f"{b / 1024:.1f}KB"
+    elif b < 1024 * 1024 * 1024:
+        return f"{b / (1024 * 1024):.1f}MB"
+    else:
+        return f"{b / (1024 * 1024 * 1024):.2f}GB"
+
+
+def format_rate(bps: float) -> str:
+    """Format transfer speed in bytes per second."""
+    return f"{format_bytes(bps)}/s"
 
 
 def format_uptime(seconds: float) -> str:
@@ -276,6 +294,8 @@ class TerminalDashboard:
     country_code_to_flag = staticmethod(country_code_to_flag)
     format_duration = staticmethod(format_duration)
     format_uptime = staticmethod(format_uptime)
+    format_bytes = staticmethod(format_bytes)
+    format_rate = staticmethod(format_rate)
 
     @staticmethod
     def render_gateway_dashboard(
@@ -337,34 +357,40 @@ class TerminalDashboard:
         lines.append("\033[2mToggle View: [s] Switch to Pool Monitor  │  [+] Add Port  │  [-] Remove Port  │  [Ctrl+C] Stop\033[0m")
         lines.append("")
         header = (
-            f"\033[1m{'Slot':<5} {'Port':<7} {'Status':<10} {'Location':<18} "
-            f"{'Alive':<9} {'Anon':<7} {'Ping (TCP/TTFB)':<16} {'Active':<7} {'KB':<8} {'Upstream'}\033[0m"
+            f"\033[1m{'Slot':<5} {'Port':<6} {'Status':<9} {'Location':<16} "
+            f"{'Alive':<11} {'Speed (▲/▼)':<18} {'Traffic (▲/▼)':<18} {'Conns':<8} {'Ping (TCP/TTFB)':<16} {'Upstream'}\033[0m"
         )
         lines.append(header)
-        sep_len = 100
+        sep_len = 118
         lines.append("─" * sep_len)
 
         for s in slots:
             stats = s.stats
+            if hasattr(stats, "update_rates"):
+                try:
+                    stats.update_rates()
+                except Exception:
+                    pass
+
             if stats.status == "healthy":
                 status_color = "\033[32m"
             elif stats.status == "waiting":
                 status_color = "\033[33m"
             else:
                 status_color = "\033[31m"
-            status_str = f"{status_color}{stats.status:<10}\033[0m"
+            status_str = f"{status_color}{stats.status:<9}\033[0m"
 
             raw_loc = stats.country or "N/A"
             code = raw_loc.split()[0].upper()[:2] if raw_loc and raw_loc != "N/A" else ""
             flag = country_code_to_flag(code)
             loc = f"{flag} {raw_loc}" if flag else raw_loc
             vlen = visible_len(loc)
-            if vlen < 18:
-                loc_padded = loc + " " * (18 - vlen)
+            if vlen < 16:
+                loc_padded = loc + " " * (16 - vlen)
             else:
-                loc_padded = loc[:17] + "…"
+                loc_padded = loc[:15] + "…"
 
-            # Alive Time
+            # Alive Time (down to the second)
             if stats.status == "healthy":
                 first_seen = getattr(stats, "first_seen_alive", None)
                 last_swapped = getattr(stats, "last_swapped_at", None)
@@ -379,23 +405,32 @@ class TerminalDashboard:
             else:
                 alive_str = "-"
 
-            anon = getattr(stats, "anonymity", "unknown")[:6]
+            bps_up = stats.bps_sent if isinstance(getattr(stats, "bps_sent", None), (int, float)) else 0.0
+            bps_down = stats.bps_received if isinstance(getattr(stats, "bps_received", None), (int, float)) else 0.0
+            speed_str = f"{format_rate(bps_up)} / {format_rate(bps_down)}"
+
+            b_up = stats.bytes_sent if isinstance(getattr(stats, "bytes_sent", None), (int, float)) else 0.0
+            b_down = stats.bytes_received if isinstance(getattr(stats, "bytes_received", None), (int, float)) else 0.0
+            traffic_str = f"{format_bytes(b_up)} / {format_bytes(b_down)}"
+
+            c_act = stats.connections_active if isinstance(getattr(stats, "connections_active", None), int) else 0
+            c_tot = stats.connections_total if isinstance(getattr(stats, "connections_total", None), int) else 0
+            conns_str = f"{c_act} ({c_tot})"
+
             tcp = getattr(stats, "tcp_ms", None)
             ttfb = getattr(stats, "ttfb_ms", None)
-
-            if tcp and tcp != float("inf"):
-                ping_str = f"{int(tcp)}ms / {int(ttfb)}ms" if ttfb and ttfb != float("inf") else f"{int(tcp)}ms TCP"
+            if isinstance(tcp, (int, float)) and tcp != float("inf"):
+                ping_str = f"{int(tcp)}ms / {int(ttfb)}ms" if isinstance(ttfb, (int, float)) and ttfb != float("inf") else f"{int(tcp)}ms TCP"
             else:
                 ping_str = "- / -"
 
-            kb = (stats.bytes_received + stats.bytes_sent) / 1024
             upstream = stats.upstream or "none"
             if len(upstream) > 28:
                 upstream = upstream[:27] + "…"
 
             line = (
-                f"{s.slot_id:<5} {s.port:<7} {status_str} {loc_padded} "
-                f"{alive_str:<9} {anon:<7} {ping_str:<16} {stats.connections_active:<7} {kb:<8.1f} {upstream}"
+                f"{s.slot_id:<5} {s.port:<6} {status_str} {loc_padded} "
+                f"{alive_str:<11} {speed_str:<18} {traffic_str:<18} {conns_str:<8} {ping_str:<16} {upstream}"
             )
             lines.append(line)
 

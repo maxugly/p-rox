@@ -344,4 +344,33 @@ def test_gateway_country_filtering(tmp_path):
     assert server_us.slots[1].stats.upstream == "none (pool warming)"
 
 
+def test_slot_stats_rates_and_traffic():
+    from proxy_collector.gateway import SlotStats
+
+    stats = SlotStats(port=3030, slot_id=0, upstream="http://1.1.1.1:8080", scheme="http", host="1.1.1.1")
+    assert stats.bps_sent == 0.0
+    assert stats.bps_received == 0.0
+    assert stats.bytes_sent == 0
+    assert stats.bytes_received == 0
+    assert stats.connections_active == 0
+    assert stats.connections_total == 0
+
+    # Simulate 2048 bytes sent and 4096 bytes received over 2.0 seconds
+    t0 = stats._last_rate_calc_at
+    stats.bytes_sent = 2048
+    stats.bytes_received = 4096
+    stats.update_rates(now=t0 + 2.0)
+
+    assert stats.bps_sent == 1024.0
+    assert stats.bps_received == 2048.0
+
+    # No additional bytes transferred over next 1.0 second -> rate returns to 0
+    stats.update_rates(now=t0 + 3.0)
+    assert stats.bps_sent == 0.0
+    assert stats.bps_received == 0.0
+    assert stats.bytes_sent == 2048
+    assert stats.bytes_received == 4096
+
+
+
 
