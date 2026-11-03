@@ -79,3 +79,33 @@ def test_proxydb_mark_proxy_failed(tmp_path):
     db.mark_proxy_failed(p.url)
     assert len(db.get_alive_proxies()) == 0
     assert db.get_stats()["dead"] == 1
+
+
+def test_proxydb_keepalive_priority_and_reset(tmp_path):
+    import time
+    db = ProxyDB(db_path=tmp_path / "test.db")
+    p1 = Proxy(scheme="http", host="1.1.1.1", port=8080)
+    p2 = Proxy(scheme="http", host="2.2.2.2", port=8080)
+    db.upsert_batch([p1, p2])
+
+    # Mark p1 as alive checked 4 minutes ago (> 180s keepalive)
+    past_time = time.time() - 240.0
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE proxies SET status = 'alive', last_checked_at = ?, latency_ms = 100.0 WHERE url = ?",
+            (past_time, p1.url),
+        )
+
+    # get_candidates_for_testing must return p1 FIRST because it's due for 3-minute heartbeat
+    candidates = db.get_candidates_for_testing(limit=10, keepalive_seconds=180.0)
+    assert len(candidates) == 2
+    assert candidates[0]["url"] == p1.url  # Heartbeat priority!
+    assert candidates[1]["url"] == p2.url  # Fresh untested candidate
+
+    # Test reset_pool
+    db.reset_pool(clear_all=False)
+    stats = db.get_stats()
+    assert stats["total"] == 2
+    assert stats["untested"] == 2
+    assert stats["alive"] == 0
+

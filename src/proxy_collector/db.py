@@ -100,24 +100,54 @@ class ProxyDB:
 
         return inserted_total
 
-    def get_candidates_for_testing(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """Fetch candidates prioritized for health checks (untested first, then oldest checked)."""
+    def get_candidates_for_testing(
+        self,
+        limit: int = 100,
+        keepalive_seconds: float = 180.0,
+    ) -> List[Dict[str, Any]]:
+        """Fetch candidates prioritized for health checks:
+        1. Known ALIVE proxies due for 3-minute heartbeat re-check.
+        2. Fresh UNTESTED candidates (newest scraped IPs first).
+        3. DEAD proxies due for retry (2-hour exponential backoff).
+        """
+        now = time.time()
+        stale_threshold = now - keepalive_seconds
+        dead_threshold = now - 7200.0  # 2 hours backoff for dead nodes
+        results = []
+
         with self.get_connection() as conn:
-            rows = conn.execute(
+            # 1. Alive proxies due for keepalive heartbeat
+            alive_due = conn.execute(
                 """
                 SELECT id, scheme, host, port, username, password, url, status, fails, last_checked_at
                 FROM proxies
-                WHERE status = 'untested' OR (status = 'alive' AND last_checked_at < ?)
-                ORDER BY CASE status WHEN 'untested' THEN 0 ELSE 1 END, last_checked_at ASC
+                WHERE status = 'alive' AND (last_checked_at IS NULL OR last_checked_at < ?)
+                ORDER BY last_checked_at ASC
                 LIMIT ?
                 """,
-                (time.time() - 3600.0, limit),
+                (stale_threshold, limit),
             ).fetchall()
+            results.extend([dict(r) for r in alive_due])
 
-            if len(rows) < limit:
-                # Fill remaining capacity with benched proxies that have failed < 5 times
-                remaining = limit - len(rows)
-                more_rows = conn.execute(
+            # 2. Fresh untested candidates
+            if len(results) < limit:
+                remaining = limit - len(results)
+                untested = conn.execute(
+                    """
+                    SELECT id, scheme, host, port, username, password, url, status, fails, last_checked_at
+                    FROM proxies
+                    WHERE status = 'untested'
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """,
+                    (remaining,),
+                ).fetchall()
+                results.extend([dict(r) for r in untested])
+
+            # 3. Dead candidates due for retry
+            if len(results) < limit:
+                remaining = limit - len(results)
+                dead = conn.execute(
                     """
                     SELECT id, scheme, host, port, username, password, url, status, fails, last_checked_at
                     FROM proxies
@@ -125,11 +155,11 @@ class ProxyDB:
                     ORDER BY last_checked_at ASC
                     LIMIT ?
                     """,
-                    (time.time() - 7200.0, remaining),
+                    (dead_threshold, remaining),
                 ).fetchall()
-                rows = list(rows) + list(more_rows)
+                results.extend([dict(r) for r in dead])
 
-            return [dict(r) for r in rows]
+            return results
 
     def record_test_result(
         self,
@@ -177,19 +207,43 @@ class ProxyDB:
                 )
 
     def get_alive_proxies(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Fetch the fastest verified working proxies for gateway routing."""
+        """Fetch the freshest and fastest verified working proxies (Rule 1: Freshness first, then ping)."""
         with self.get_connection() as conn:
             rows = conn.execute(
                 """
-                SELECT id, scheme, host, port, username, password, url, latency_ms, ttfb_ms, egress_ip, country, city, asn, anonymity
+                SELECT id, scheme, host, port, username, password, url, latency_ms, ttfb_ms, egress_ip, country, city, asn, anonymity, last_checked_at
                 FROM proxies
                 WHERE status = 'alive'
-                ORDER BY latency_ms ASC, last_checked_at DESC
+                ORDER BY last_checked_at DESC, latency_ms ASC
                 LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def reset_pool(self, clear_all: bool = False):
+        """Reset proxy health stats to untested or completely wipe the database."""
+        if clear_all:
+            if self.db_path.exists():
+                self.db_path.unlink()
+            self.init_db()
+        else:
+            with self.get_connection() as conn:
+                conn.execute(
+                    """
+                    UPDATE proxies
+                    SET status = 'untested',
+                        latency_ms = NULL,
+                        ttfb_ms = NULL,
+                        egress_ip = NULL,
+                        country = NULL,
+                        city = NULL,
+                        asn = NULL,
+                        anonymity = NULL,
+                        fails = 0,
+                        last_checked_at = NULL
+                    """
+                )
 
     def mark_proxy_failed(self, url: str):
         """Mark a proxy as failed when dropped by a gateway slot."""

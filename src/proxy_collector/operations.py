@@ -93,13 +93,14 @@ def sync_candidates(
 def test_candidates(
     db: ProxyDB,
     limit: int = 50,
-    workers: int = 10,
+    workers: int = 25,
+    keepalive: float = 180.0,
     timeout: float = 6.0,
     geoip_resolver: Optional[GeoIPResolver] = None,
-    on_result: Optional[Callable[[Dict[str, Any], bool, str], None]] = None,
+    on_result: Optional[Callable[[Dict[str, Any], bool, Any], None]] = None,
 ) -> Dict[str, Any]:
     """Test a batch of candidates from the database and record live results."""
-    candidates = db.get_candidates_for_testing(limit=limit)
+    candidates = db.get_candidates_for_testing(limit=limit, keepalive_seconds=keepalive)
     if not candidates:
         return {"tested": 0, "alive": 0, "dead": 0, "message": "No candidates available for testing."}
 
@@ -169,3 +170,49 @@ def test_candidates(
         "total_alive_in_db": stats["alive"],
         "total_untested_in_db": stats["untested"],
     }
+
+
+def run_continuous_worker(
+    db: ProxyDB,
+    workers: int = 25,
+    keepalive: float = 180.0,
+    timeout: float = 6.0,
+    batch_size: int = 50,
+    stop_event: Optional[Any] = None,
+    on_result: Optional[Callable[[Dict[str, Any], bool, Any], None]] = None,
+    on_tick: Optional[Callable[[Dict[str, Any], float], None]] = None,
+):
+    """Run continuous live testing loop maintaining fresh working proxies in SQLite."""
+    import threading
+
+    stop = stop_event or threading.Event()
+    resolver = GeoIPResolver()
+    total_tested = 0
+    start_time = time.monotonic()
+
+    while not stop.is_set():
+        res = test_candidates(
+            db=db,
+            limit=batch_size,
+            workers=workers,
+            keepalive=keepalive,
+            timeout=timeout,
+            geoip_resolver=resolver,
+            on_result=on_result,
+        )
+
+        batch_tested = res.get("tested", 0)
+        total_tested += batch_tested
+        elapsed = time.monotonic() - start_time
+        rate = total_tested / elapsed if elapsed > 0 else 0.0
+
+        if on_tick:
+            stats = db.get_stats()
+            stats["rate_per_sec"] = round(rate, 1)
+            stats["total_tested_session"] = total_tested
+            on_tick(stats, rate)
+
+        if batch_tested == 0:
+            # Idle sleep if no candidates due for check
+            stop.wait(2.0)
+
