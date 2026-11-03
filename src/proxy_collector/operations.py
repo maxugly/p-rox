@@ -23,6 +23,8 @@ def sync_candidates(
     force: bool = False,
     sources_dir: Optional[Path] = None,
     concurrency: int = 10,
+    resolve_geoip: bool = True,
+    geoip_resolver: Optional[GeoIPResolver] = None,
     on_feed_progress: Optional[Callable[[str, str, int, str], None]] = None,
     on_import_progress: Optional[Callable[[int], None]] = None,
 ) -> Dict[str, Any]:
@@ -62,13 +64,21 @@ def sync_candidates(
         batch.append(p)
         total_streamed += 1
         if len(batch) >= 10000:
-            newly_inserted += db.upsert_batch(batch)
+            newly_inserted += db.upsert_batch(
+                batch,
+                resolve_geoip=resolve_geoip,
+                geoip_resolver=geoip_resolver,
+            )
             batch.clear()
             if on_import_progress:
                 on_import_progress(total_streamed)
 
     if batch:
-        newly_inserted += db.upsert_batch(batch)
+        newly_inserted += db.upsert_batch(
+            batch,
+            resolve_geoip=resolve_geoip,
+            geoip_resolver=geoip_resolver,
+        )
         batch.clear()
         if on_import_progress:
             on_import_progress(total_streamed)
@@ -98,11 +108,12 @@ def test_candidates(
     workers: int = 25,
     keepalive: float = 180.0,
     timeout: float = 6.0,
+    country: Optional[str] = None,
     geoip_resolver: Optional[GeoIPResolver] = None,
     on_result: Optional[Callable[[Dict[str, Any], bool, Any], None]] = None,
 ) -> Dict[str, Any]:
     """Test a batch of candidates from the database and record live results."""
-    candidates = db.get_candidates_for_testing(limit=limit, keepalive_seconds=keepalive)
+    candidates = db.get_candidates_for_testing(limit=limit, keepalive_seconds=keepalive, country=country)
     if not candidates:
         return {"tested": 0, "alive": 0, "dead": 0, "message": "No candidates available for testing."}
 
@@ -179,6 +190,7 @@ def run_continuous_worker(
     keepalive: float = 180.0,
     timeout: float = 6.0,
     batch_size: int = 50,
+    country: Optional[str] = None,
     stop_event: Optional[Any] = None,
     on_result: Optional[Callable[[Dict[str, Any], bool, Any], None]] = None,
     on_tick: Optional[Callable[[Dict[str, Any], float], None]] = None,
@@ -257,6 +269,7 @@ def run_continuous_worker(
                         limit=needed + len(in_flight),
                         keepalive_seconds=keepalive,
                         include_all_alive=first_feed,
+                        country=country,
                     )
                     first_feed = False
                     with in_flight_lock:
@@ -341,4 +354,93 @@ def run_continuous_worker(
                 )
             except queue.Empty:
                 break
+
+
+def run_background_geoip_worker(
+    db: ProxyDB,
+    resolver: Optional[GeoIPResolver] = None,
+    stop_event: Optional[Any] = None,
+    batch_size: int = 5000,
+    on_batch_complete: Optional[Callable[[int, int], None]] = None,
+) -> int:
+    """Resolve GeoIP metadata in the background for proxies missing country data.
+
+    Processes candidates in batches, caching IP lookups in memory for maximum throughput.
+    Returns total proxies resolved during this run.
+    """
+    stop = stop_event or threading.Event()
+    r = resolver or GeoIPResolver()
+    if not r.is_available:
+        logger.debug("GeoIP resolver unavailable; background GeoIP worker stopped.")
+        return 0
+
+    total_resolved = 0
+    host_cache: Dict[str, Tuple[Optional[str], Optional[str], Optional[str]]] = {}
+
+    while not stop.is_set():
+        batch = db.get_unresolved_geoip_batch(limit=batch_size)
+        if not batch:
+            break
+
+        updates: List[Tuple[Optional[str], Optional[str], Optional[str], int]] = []
+        for row in batch:
+            cand_id = row["id"]
+            host = row.get("host", "")
+            if not host:
+                updates.append(("??", None, None, cand_id))
+                continue
+
+            cached = host_cache.get(host)
+            if cached is not None:
+                country, city, asn = cached
+            else:
+                loc = r.lookup(host)
+                if loc.country_code:
+                    country = f"{loc.country_code} ({loc.city})" if loc.city else loc.country_code
+                else:
+                    country = "??"
+                city = loc.city or None
+                asn = loc.org or None
+                if len(host_cache) < 50000:
+                    host_cache[host] = (country, city, asn)
+
+            updates.append((country, city, asn, cand_id))
+
+        if updates:
+            db.update_geoip_batch(updates)
+            total_resolved += len(updates)
+            if on_batch_complete:
+                on_batch_complete(len(updates), total_resolved)
+
+        # Micro-yield to prevent SQLite write lock monopolization
+        time.sleep(0.01)
+
+    return total_resolved
+
+
+def start_background_geoip_thread(
+    db: ProxyDB,
+    resolver: Optional[GeoIPResolver] = None,
+    stop_event: Optional[Any] = None,
+    batch_size: int = 5000,
+) -> Optional[threading.Thread]:
+    """Start background GeoIP worker thread if unpopulated candidates exist and database is available."""
+    r = resolver or GeoIPResolver()
+    if not r.is_available:
+        return None
+
+    unresolved = db.get_unresolved_geoip_count()
+    if unresolved == 0:
+        return None
+
+    stop = stop_event or threading.Event()
+    t = threading.Thread(
+        target=run_background_geoip_worker,
+        args=(db, r, stop, batch_size),
+        name="p-rox-geoip-resolver",
+        daemon=True,
+    )
+    t.start()
+    return t
+
 

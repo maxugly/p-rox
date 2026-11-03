@@ -56,6 +56,8 @@ class ProxyDB:
                 CREATE INDEX IF NOT EXISTS idx_status ON proxies(status);
                 CREATE INDEX IF NOT EXISTS idx_latency ON proxies(latency_ms);
                 CREATE INDEX IF NOT EXISTS idx_last_checked ON proxies(last_checked_at);
+                CREATE INDEX IF NOT EXISTS idx_country ON proxies(country);
+                CREATE INDEX IF NOT EXISTS idx_country_null ON proxies(id) WHERE country IS NULL;
                 """
             )
             # Migration: add first_seen_alive column if upgrading existing database
@@ -64,32 +66,73 @@ class ProxyDB:
             except sqlite3.OperationalError:
                 pass
 
-    def upsert_batch(self, proxies: Iterable[Any], batch_size: int = 10000) -> int:
+    def upsert_batch(
+        self,
+        proxies: Iterable[Any],
+        batch_size: int = 10000,
+        resolve_geoip: bool = True,
+        geoip_resolver: Optional[Any] = None,
+    ) -> int:
         """Bulk insert proxy candidates. Skips existing URLs.
 
+        Calculates country, city, and ASN immediately on insertion if resolve_geoip=True.
         Returns total newly inserted rows.
         """
+        resolver = None
+        if resolve_geoip:
+            if geoip_resolver is not None:
+                resolver = geoip_resolver if getattr(geoip_resolver, "is_available", False) else None
+            else:
+                try:
+                    from .geoip import GeoIPResolver
+
+                    r = GeoIPResolver()
+                    if r.is_available:
+                        resolver = r
+                except Exception:
+                    resolver = None
+
         inserted_total = 0
         batch = []
+        host_cache: Dict[str, Tuple[Optional[str], Optional[str], Optional[str]]] = {}
 
         with self.get_connection() as conn:
             for p in proxies:
-                scheme = getattr(p, "scheme", None) or p.get("scheme", "http")
-                host = getattr(p, "host", None) or p.get("host", "")
-                port = int(getattr(p, "port", None) or p.get("port", 0))
-                user = getattr(p, "username", None) or p.get("user") or None
-                pw = getattr(p, "password", None) or p.get("pass") or None
-                url = getattr(p, "url", None) or p.get("url")
+                scheme = getattr(p, "scheme", None) or (p.get("scheme", "http") if isinstance(p, dict) else "http")
+                host = getattr(p, "host", None) or (p.get("host", "") if isinstance(p, dict) else "")
+                port = int(getattr(p, "port", None) or (p.get("port", 0) if isinstance(p, dict) else 0))
+                user = getattr(p, "username", None) or (p.get("user") if isinstance(p, dict) else None)
+                pw = getattr(p, "password", None) or (p.get("pass") if isinstance(p, dict) else None)
+                url = getattr(p, "url", None) or (p.get("url") if isinstance(p, dict) else None)
                 if not url:
                     auth = f"{user}:{pw}@" if user else ""
                     url = f"{scheme}://{auth}{host}:{port}"
 
-                batch.append((scheme, host, port, user, pw, url))
+                country = getattr(p, "country", None) or (p.get("country") if isinstance(p, dict) else None)
+                city = getattr(p, "city", None) or (p.get("city") if isinstance(p, dict) else None)
+                asn = getattr(p, "asn", None) or (p.get("asn") if isinstance(p, dict) else None)
+
+                if resolver and not country and host:
+                    cached = host_cache.get(host)
+                    if cached is not None:
+                        country, city, asn = cached
+                    else:
+                        loc = resolver.lookup(host)
+                        if loc.country_code:
+                            country = f"{loc.country_code} ({loc.city})" if loc.city else loc.country_code
+                        else:
+                            country = "??"
+                        city = loc.city or None
+                        asn = loc.org or None
+                        if len(host_cache) < 50000:
+                            host_cache[host] = (country, city, asn)
+
+                batch.append((scheme, host, port, user, pw, url, country, city, asn))
                 if len(batch) >= batch_size:
                     cursor = conn.executemany(
                         """
-                        INSERT OR IGNORE INTO proxies (scheme, host, port, username, password, url)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        INSERT OR IGNORE INTO proxies (scheme, host, port, username, password, url, country, city, asn)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         batch,
                     )
@@ -99,8 +142,8 @@ class ProxyDB:
             if batch:
                 cursor = conn.executemany(
                     """
-                    INSERT OR IGNORE INTO proxies (scheme, host, port, username, password, url)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT OR IGNORE INTO proxies (scheme, host, port, username, password, url, country, city, asn)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     batch,
                 )
@@ -108,45 +151,86 @@ class ProxyDB:
 
         return inserted_total
 
+    def get_unresolved_geoip_batch(self, limit: int = 5000) -> List[Dict[str, Any]]:
+        """Fetch candidate proxies that have not yet had their GeoIP resolved."""
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, host
+                FROM proxies
+                WHERE country IS NULL
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def update_geoip_batch(self, updates: List[Tuple[Optional[str], Optional[str], Optional[str], int]]):
+        """Bulk update resolved country, city, and asn metadata for proxy candidates."""
+        with self.get_connection() as conn:
+            conn.executemany(
+                """
+                UPDATE proxies
+                SET country = ?, city = ?, asn = ?
+                WHERE id = ?
+                """,
+                updates,
+            )
+
+    def get_unresolved_geoip_count(self) -> int:
+        """Return count of proxies currently missing country geolocation."""
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM proxies WHERE country IS NULL").fetchone()
+            return row[0] if row else 0
+
     def get_candidates_for_testing(
         self,
         limit: int = 100,
         keepalive_seconds: float = 180.0,
         include_all_alive: bool = False,
+        country: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Fetch candidates prioritized for health checks:
         1. Known ALIVE proxies (last live proxies first if include_all_alive=True, else due for heartbeat).
         2. Fresh UNTESTED candidates (newest scraped IPs first).
         3. DEAD proxies due for retry (2-hour exponential backoff).
+
+        Optionally filters candidates by country prefix (e.g. 'US', 'DE').
         """
         now = time.time()
         stale_threshold = now - keepalive_seconds
         dead_threshold = now - 7200.0  # 2 hours backoff for dead nodes
         results = []
 
+        country_filter = ""
+        c_param: Tuple[Any, ...] = ()
+        if country:
+            country_filter = " AND country LIKE ?"
+            c_param = (f"{country.upper().strip()}%",)
+
         with self.get_connection() as conn:
             # 1. Alive proxies:
             if include_all_alive:
                 alive_due = conn.execute(
-                    """
+                    f"""
                     SELECT id, scheme, host, port, username, password, url, status, fails, last_checked_at
                     FROM proxies
-                    WHERE status = 'alive'
+                    WHERE status = 'alive'{country_filter}
                     ORDER BY last_checked_at DESC
                     LIMIT ?
                     """,
-                    (limit,),
+                    c_param + (limit,),
                 ).fetchall()
             else:
                 alive_due = conn.execute(
-                    """
+                    f"""
                     SELECT id, scheme, host, port, username, password, url, status, fails, last_checked_at
                     FROM proxies
-                    WHERE status = 'alive' AND (last_checked_at IS NULL OR last_checked_at < ?)
+                    WHERE status = 'alive' AND (last_checked_at IS NULL OR last_checked_at < ?){country_filter}
                     ORDER BY last_checked_at ASC
                     LIMIT ?
                     """,
-                    (stale_threshold, limit),
+                    (stale_threshold,) + c_param + (limit,),
                 ).fetchall()
             results.extend([dict(r) for r in alive_due])
 
@@ -154,14 +238,14 @@ class ProxyDB:
             if len(results) < limit:
                 remaining = limit - len(results)
                 untested = conn.execute(
-                    """
+                    f"""
                     SELECT id, scheme, host, port, username, password, url, status, fails, last_checked_at
                     FROM proxies
-                    WHERE status = 'untested'
+                    WHERE status = 'untested'{country_filter}
                     ORDER BY id ASC
                     LIMIT ?
                     """,
-                    (remaining,),
+                    c_param + (remaining,),
                 ).fetchall()
                 results.extend([dict(r) for r in untested])
 
@@ -169,14 +253,14 @@ class ProxyDB:
             if len(results) < limit:
                 remaining = limit - len(results)
                 dead = conn.execute(
-                    """
+                    f"""
                     SELECT id, scheme, host, port, username, password, url, status, fails, last_checked_at
                     FROM proxies
-                    WHERE status = 'dead' AND fails < 5 AND (last_checked_at IS NULL OR last_checked_at < ?)
+                    WHERE status = 'dead' AND fails < 5 AND (last_checked_at IS NULL OR last_checked_at < ?){country_filter}
                     ORDER BY last_checked_at ASC
                     LIMIT ?
                     """,
-                    (dead_threshold, remaining),
+                    (dead_threshold,) + c_param + (remaining,),
                 ).fetchall()
                 results.extend([dict(r) for r in dead])
 
@@ -229,19 +313,24 @@ class ProxyDB:
                     (now, url),
                 )
 
-    def get_alive_proxies(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Fetch the freshest and fastest verified working proxies (Rule 1: Freshness first, then ping)."""
+    def get_alive_proxies(self, limit: int = 10, country: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Fetch the freshest and fastest verified working proxies (Rule 1: Freshness first, then ping).
+
+        Optionally filters by country prefix (e.g. 'US', 'DE').
+        """
         with self.get_connection() as conn:
-            rows = conn.execute(
-                """
+            query = """
                 SELECT id, scheme, host, port, username, password, url, latency_ms, ttfb_ms, egress_ip, country, city, asn, anonymity, first_seen_alive, last_checked_at
                 FROM proxies
                 WHERE status = 'alive'
-                ORDER BY last_checked_at DESC, latency_ms ASC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+            """
+            params: List[Any] = []
+            if country:
+                query += " AND country LIKE ?"
+                params.append(f"{country.upper().strip()}%")
+            query += " ORDER BY last_checked_at DESC, latency_ms ASC LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(query, tuple(params)).fetchall()
             return [dict(r) for r in rows]
 
     def reset_pool(self, clear_all: bool = False):

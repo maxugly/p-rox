@@ -184,3 +184,96 @@ def test_proxydb_pool_analytics(tmp_path):
     assert analytics["anonymity"].get("ELITE") == 2
 
 
+def test_proxydb_upsert_with_geoip_and_no_geoip(tmp_path):
+    class MockResolver:
+        is_available = True
+
+        def lookup(self, ip: str):
+            from proxy_collector.models import GeoLocation
+            if ip.startswith("1."):
+                return GeoLocation(country_code="US", city="New York", org="US ISP")
+            return GeoLocation(country_code="FR", city="Paris", org="FR ISP")
+
+    db = ProxyDB(db_path=tmp_path / "geoip.db")
+    p1 = Proxy(scheme="http", host="1.2.3.4", port=8080)
+    p2 = Proxy(scheme="http", host="2.3.4.5", port=8080)
+
+    # 1. Upsert with GeoIP enabled
+    db.upsert_batch([p1], resolve_geoip=True, geoip_resolver=MockResolver())
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT country, city, asn FROM proxies WHERE url = ?", (p1.url,)).fetchone()
+        assert row["country"] == "US (New York)"
+        assert row["city"] == "New York"
+        assert row["asn"] == "US ISP"
+
+    # 2. Upsert with GeoIP disabled
+    db.upsert_batch([p2], resolve_geoip=False)
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT country, city, asn FROM proxies WHERE url = ?", (p2.url,)).fetchone()
+        assert row["country"] is None
+        assert row["city"] is None
+
+
+def test_proxydb_unresolved_batch_and_update(tmp_path):
+    db = ProxyDB(db_path=tmp_path / "unresolved.db")
+    p1 = Proxy(scheme="http", host="1.1.1.1", port=8080)
+    p2 = Proxy(scheme="http", host="2.2.2.2", port=8080)
+    db.upsert_batch([p1, p2], resolve_geoip=False)
+
+    assert db.get_unresolved_geoip_count() == 2
+    batch = db.get_unresolved_geoip_batch(limit=10)
+    assert len(batch) == 2
+
+    # Bulk update
+    updates = [
+        ("US (Washington)", "Washington", "ASN1", batch[0]["id"]),
+        ("DE (Frankfurt)", "Frankfurt", "ASN2", batch[1]["id"]),
+    ]
+    db.update_geoip_batch(updates)
+
+    assert db.get_unresolved_geoip_count() == 0
+    with db.get_connection() as conn:
+        rows = conn.execute("SELECT country FROM proxies ORDER BY id ASC").fetchall()
+        assert rows[0][0] == "US (Washington)"
+        assert rows[1][0] == "DE (Frankfurt)"
+
+
+def test_proxydb_country_filtering(tmp_path):
+    db = ProxyDB(db_path=tmp_path / "country_filter.db")
+    p_us = Proxy(scheme="http", host="1.1.1.1", port=8080)
+    p_de = Proxy(scheme="http", host="2.2.2.2", port=8080)
+    p_fr = Proxy(scheme="http", host="3.3.3.3", port=8080)
+    db.upsert_batch([p_us, p_de, p_fr], resolve_geoip=False)
+
+    # Populate countries
+    with db.get_connection() as conn:
+        conn.execute("UPDATE proxies SET country = 'US (Chicago)' WHERE url = ?", (p_us.url,))
+        conn.execute("UPDATE proxies SET country = 'DE (Munich)' WHERE url = ?", (p_de.url,))
+        conn.execute("UPDATE proxies SET country = 'FR (Paris)' WHERE url = ?", (p_fr.url,))
+
+    # Filter candidates for testing by country
+    c_us = db.get_candidates_for_testing(limit=10, country="US")
+    assert len(c_us) == 1
+    assert c_us[0]["url"] == p_us.url
+
+    c_de = db.get_candidates_for_testing(limit=10, country="de")  # case-insensitive
+    assert len(c_de) == 1
+    assert c_de[0]["url"] == p_de.url
+
+    # Record alive
+    db.record_test_result(url=p_us.url, is_alive=True, latency_ms=50.0, country="US (Chicago)")
+    db.record_test_result(url=p_de.url, is_alive=True, latency_ms=70.0, country="DE (Munich)")
+
+    alive_us = db.get_alive_proxies(limit=10, country="US")
+    assert len(alive_us) == 1
+    assert alive_us[0]["url"] == p_us.url
+
+    alive_de = db.get_alive_proxies(limit=10, country="de")
+    assert len(alive_de) == 1
+    assert alive_de[0]["url"] == p_de.url
+
+    alive_all = db.get_alive_proxies(limit=10)
+    assert len(alive_all) == 2
+
+
+

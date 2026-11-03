@@ -538,6 +538,7 @@ class GatewayServer:
         target_site: Optional[str] = None,
         cache_dir: Optional[str | Path] = None,
         db: Optional[Any] = None,
+        country: Optional[str] = None,
     ):
         self.slots_count = max(1, slots_count)
         self.base_port = base_port
@@ -553,6 +554,7 @@ class GatewayServer:
             except Exception:
                 pass
         self.target_site = target_site
+        self.country = country
 
         self.status_file = self.cache_dir / "gateway_status.json"
         self.slots: List[ProxySlot] = []
@@ -567,7 +569,10 @@ class GatewayServer:
             if s.current_proxy and (exclude_slot_id is None or s.slot_id != exclude_slot_id)
         }
         if self.db:
-            candidates = self.db.get_alive_proxies(limit=max(50, self.slots_count * 3))
+            candidates = self.db.get_alive_proxies(
+                limit=max(50, self.slots_count * 3),
+                country=self.country,
+            )
             for cand in candidates:
                 cand_url = cand.get("url") or f"{cand.get('scheme')}://{cand.get('host')}:{cand.get('port')}"
                 if cand_url not in used_urls:

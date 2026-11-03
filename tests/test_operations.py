@@ -126,3 +126,131 @@ def test_run_continuous_worker_tracks_died(tmp_path):
     assert db.get_stats()["alive"] == 1
     assert db.get_stats()["dead"] == 1
 
+
+def test_background_geoip_worker(tmp_path):
+    class MockResolver:
+        is_available = True
+
+        def lookup(self, ip: str):
+            from proxy_collector.models import GeoLocation
+            if ip == "1.1.1.1":
+                return GeoLocation(country_code="US", city="Chicago", org="TestOrg US")
+            return GeoLocation(country_code="DE", city="Frankfurt", org="TestOrg DE")
+
+    db = ProxyDB(db_path=tmp_path / "bg_geoip.db")
+    p1 = Proxy(scheme="http", host="1.1.1.1", port=8080)
+    p2 = Proxy(scheme="http", host="2.2.2.2", port=8080)
+    db.upsert_batch([p1, p2], resolve_geoip=False)
+
+    assert db.get_unresolved_geoip_count() == 2
+
+    # Run background worker synchronously
+    batches_done = []
+    total = ops.run_background_geoip_worker(
+        db=db,
+        resolver=MockResolver(),
+        batch_size=10,
+        on_batch_complete=lambda count, tot: batches_done.append((count, tot)),
+    )
+
+    assert total == 2
+    assert len(batches_done) == 1
+    assert db.get_unresolved_geoip_count() == 0
+
+    with db.get_connection() as conn:
+        rows = conn.execute("SELECT host, country, city, asn FROM proxies ORDER BY host").fetchall()
+        assert rows[0]["country"] == "US (Chicago)"
+        assert rows[0]["city"] == "Chicago"
+        assert rows[0]["asn"] == "TestOrg US"
+        assert rows[1]["country"] == "DE (Frankfurt)"
+
+
+def test_start_background_geoip_thread(tmp_path):
+    import threading
+    import time
+
+    class MockResolver:
+        is_available = True
+
+        def lookup(self, ip: str):
+            from proxy_collector.models import GeoLocation
+            return GeoLocation(country_code="JP", city="Tokyo", org="JP ISP")
+
+    db = ProxyDB(db_path=tmp_path / "thread_geoip.db")
+    p = Proxy(scheme="http", host="3.3.3.3", port=8080)
+    db.upsert_batch([p], resolve_geoip=False)
+
+    stop = threading.Event()
+    thread = ops.start_background_geoip_thread(db=db, resolver=MockResolver(), stop_event=stop)
+    assert thread is not None
+    assert thread.name == "p-rox-geoip-resolver"
+    assert thread.daemon is True
+
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+    assert db.get_unresolved_geoip_count() == 0
+
+    # Calling again when 0 unresolved proxies exist returns None
+    assert ops.start_background_geoip_thread(db=db, resolver=MockResolver(), stop_event=stop) is None
+
+
+def test_sync_candidates_with_geoip_toggle(tmp_path):
+    class MockResolver:
+        is_available = True
+
+        def lookup(self, ip: str):
+            from proxy_collector.models import GeoLocation
+            return GeoLocation(country_code="CA", city="Toronto", org="CA Net")
+
+    db = ProxyDB(db_path=tmp_path / "sync_geoip.db")
+    proxies = [Proxy(scheme="http", host="4.4.4.4", port=8080)]
+
+    with patch("proxy_collector.operations.ProxyCollector") as mock_col_cls:
+        mock_col = MagicMock()
+        mock_col.fetch.return_value = []
+        mock_col.collect_stream.return_value = iter(proxies)
+        mock_col_cls.return_value = mock_col
+
+        ops.sync_candidates(
+            db=db,
+            sources_dir=tmp_path,
+            resolve_geoip=True,
+            geoip_resolver=MockResolver(),
+        )
+
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT country, city FROM proxies WHERE host = '4.4.4.4'").fetchone()
+        assert row["country"] == "CA (Toronto)"
+        assert row["city"] == "Toronto"
+
+
+def test_test_candidates_country_filter(tmp_path):
+    db = ProxyDB(db_path=tmp_path / "test_country.db")
+    p_us = Proxy(scheme="http", host="1.1.1.1", port=8080)
+    p_de = Proxy(scheme="http", host="2.2.2.2", port=8080)
+    db.upsert_batch([p_us, p_de], resolve_geoip=False)
+
+    with db.get_connection() as conn:
+        conn.execute("UPDATE proxies SET country = 'US (Dallas)' WHERE url = ?", (p_us.url,))
+        conn.execute("UPDATE proxies SET country = 'DE (Berlin)' WHERE url = ?", (p_de.url,))
+
+    profile_alive = ProxyProfile(
+        proxy=p_us,
+        egress_ip="1.1.1.1",
+        latency=LatencyMetrics(tcp_handshake_ms=30.0, http_ttfb_ms=100.0),
+        security=SecurityMetrics(anonymity="elite"),
+        tier=1,
+    )
+
+    with patch("proxy_collector.operations.ProxyProfiler") as mock_prof_cls:
+        mock_prof = MagicMock()
+        mock_prof.profile.return_value = profile_alive
+        mock_prof_cls.return_value = mock_prof
+
+        res = ops.test_candidates(db=db, limit=10, country="US")
+
+    assert res["tested"] == 1
+    assert res["alive"] == 1
+    assert db.get_alive_proxies()[0]["url"] == p_us.url
+
+

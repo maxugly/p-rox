@@ -313,3 +313,35 @@ def test_cli_serve_flag_parser():
     assert args.host == "127.0.0.1"
 
 
+def test_gateway_country_filtering(tmp_path):
+    from proxy_collector.db import ProxyDB
+    from proxy_collector.models import Proxy
+
+    db = ProxyDB(db_path=tmp_path / "gw_country.db")
+    p_us = Proxy(scheme="http", host="1.1.1.1", port=8080)
+    p_de = Proxy(scheme="http", host="2.2.2.2", port=8080)
+    db.upsert_batch([p_us, p_de], resolve_geoip=False)
+
+    db.record_test_result(url=p_us.url, is_alive=True, latency_ms=40.0, country="US (Chicago)")
+    db.record_test_result(url=p_de.url, is_alive=True, latency_ms=60.0, country="DE (Frankfurt)")
+
+    # Gateway filtered by US only
+    server_us = GatewayServer(
+        slots_count=2,
+        base_port=3030,
+        db=db,
+        cache_dir=tmp_path,
+        country="US",
+    )
+    server_us._init_slots()
+
+    # Slot 0 gets the US proxy
+    assert server_us.slots[0].stats.status == "healthy"
+    assert server_us.slots[0].stats.upstream == p_us.url
+
+    # Slot 1 must be waiting because there is only 1 alive US proxy
+    assert server_us.slots[1].stats.status == "waiting"
+    assert server_us.slots[1].stats.upstream == "none (pool warming)"
+
+
+

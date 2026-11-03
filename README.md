@@ -188,6 +188,27 @@ resp = requests.get("https://httpbin.org/ip", proxies=proxies, timeout=10)
 print(resp.json())
 ```
 
+### Country Filtering & Location Selection
+Filter live testing or local gateway slot binding by ISO 2-letter country code:
+```bash
+# Run continuous maintenance and forward gateway for US proxies only
+p-rox --serve --country US
+
+# Batch test candidates located in Germany
+p-rox test --limit 50 --country DE
+```
+
+### Instant GeoIP Calculation & Background Resolution
+Country, city, and ASN metadata are computed immediately upon ingestion into SQLite using local microsecond binary MMDB lookups and in-memory host caching.
+
+For existing unpopulated candidates in the database, `p-rox` launches a dedicated daemon thread (`p-rox-geoip-resolver`) that resolves them asynchronously in batches of 5,000 without locking SQLite or degrading runner loops.
+
+To disable automatic GeoIP calculation across any command:
+```bash
+p-rox --no-geoip
+p-rox sync --no-geoip
+```
+
 ### Pool Status
 Inspect verified alive proxies, latency metrics, and country distribution:
 ```bash
@@ -258,7 +279,7 @@ The test suite runs completely offline without making outbound network requests:
 pytest -v
 ```
 
-All 80 tests execute in under 1 second.
+All 88 tests execute in under 1 second.
 
 ---
 

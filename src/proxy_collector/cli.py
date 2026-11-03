@@ -22,7 +22,12 @@ from .db import DEFAULT_DB_PATH, ProxyDB
 from .gateway import GatewayServer
 from .geoip import GeoIPResolver, download_dbip_lite, download_maxmind_geolite2
 from .models import STANDARD_SCHEMES, Proxy
-from .operations import run_continuous_worker, sync_candidates, test_candidates
+from .operations import (
+    run_continuous_worker,
+    start_background_geoip_thread,
+    sync_candidates,
+    test_candidates,
+)
 from .parsers import parse_line
 from .pool import DEFAULT_CACHE_DIR, DEFAULT_PROXY_FILE, ProxyPool
 
@@ -54,8 +59,25 @@ def cmd_run(args):
     keepalive = getattr(args, "keepalive", 180.0)
     timeout = getattr(args, "timeout", 6.0)
     serve_enabled = getattr(args, "serve", False)
+    country = getattr(args, "country", None)
+    no_geoip = getattr(args, "no_geoip", False)
 
-    # 2. Start Gateway Server if --serve is requested
+    stop_event = threading.Event()
+
+    def signal_handler(*_):
+        stop_event.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, signal_handler)
+        except (ValueError, RuntimeError):
+            pass
+
+    # 2. Launch background GeoIP resolver thread for unpopulated candidates if enabled
+    if not no_geoip:
+        start_background_geoip_thread(db=db, stop_event=stop_event)
+
+    # 3. Start Gateway Server if --serve is requested
     server = None
     gateway_loop = None
     if serve_enabled:
@@ -72,6 +94,7 @@ def cmd_run(args):
             target_site=gw_site,
             cache_dir=gw_cache_dir,
             db=db,
+            country=country,
         )
 
         gateway_loop = asyncio.new_event_loop()
@@ -85,16 +108,6 @@ def cmd_run(args):
         gw_thread.start()
 
     terminal = StickyTerminal(header_lines=6)
-    stop_event = threading.Event()
-
-    def signal_handler(*_):
-        stop_event.set()
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            signal.signal(sig, signal_handler)
-        except (ValueError, RuntimeError):
-            pass
 
     # View Mode Toggle: 's' key toggles between Pool Monitor and Gateway Server views
     VIEW_MONITOR = "monitor"
@@ -294,6 +307,7 @@ def cmd_run(args):
             keepalive=keepalive,
             timeout=timeout,
             batch_size=min(50, workers * 2),
+            country=country,
             stop_event=stop_event,
             on_result=on_result,
             on_tick=on_tick,
@@ -341,11 +355,13 @@ def cmd_sync(args):
 
     print("Step 1/2: Fetching 52 public proxy feeds...")
     sources_p = Path(args.sources).resolve() if getattr(args, "sources", None) else None
+    resolve_geoip = not getattr(args, "no_geoip", False)
     res = sync_candidates(
         db=db,
         force=getattr(args, "force", False),
         sources_dir=sources_p,
         concurrency=getattr(args, "concurrency", 10),
+        resolve_geoip=resolve_geoip,
         on_feed_progress=on_feed,
         on_import_progress=on_import,
     )
@@ -389,9 +405,11 @@ def cmd_test(args):
     workers = args.workers
     timeout = args.timeout
     keepalive = getattr(args, "keepalive", 180.0)
+    country = getattr(args, "country", None)
 
+    country_info = f" [Country: {country.upper()}]" if country else ""
     print("=" * 80)
-    print(f"  p-rox test — Testing {limit} candidates with {workers} workers (timeout={timeout}s)")
+    print(f"  p-rox test — Testing {limit} candidates{country_info} with {workers} workers (timeout={timeout}s)")
     print("=" * 80)
 
     def on_result(candidate, is_alive, profile):
@@ -413,6 +431,7 @@ def cmd_test(args):
         workers=workers,
         keepalive=keepalive,
         timeout=timeout,
+        country=country,
         on_result=on_result,
     )
 
@@ -549,6 +568,7 @@ def cmd_gateway(args):
         host=args.host,
         target_site=args.site,
         cache_dir=cache_p,
+        country=getattr(args, "country", None),
     )
 
     loop = asyncio.new_event_loop()
@@ -621,6 +641,8 @@ def main():
     parser.add_argument("--keepalive", type=int, default=180, help="Heartbeat re-check interval in seconds (default: 180s)")
     parser.add_argument("--timeout", type=float, default=6.0, help="Socket timeout per test (default: 6.0s)")
     parser.add_argument("--sources", type=str, default=None, help="Directory for cached feed files")
+    parser.add_argument("--country", "-c", type=str, default=None, help="Filter proxies by country code (e.g. US, DE, FR)")
+    parser.add_argument("--no-geoip", "--skip-geoip", action="store_true", help="Disable automatic GeoIP calculation")
     parser.add_argument("--serve", action="store_true", help="Start local forward proxy gateway on ports 3030..3039")
     parser.add_argument("--slots", type=int, default=10, help="Number of forward proxy gateway slots (default: 10)")
     parser.add_argument("--base-port", type=int, default=3030, help="Starting base port for gateway slots (default: 3030)")
@@ -641,6 +663,8 @@ def main():
     p_run.add_argument("--keepalive", type=int, default=180)
     p_run.add_argument("--timeout", type=float, default=6.0)
     p_run.add_argument("--sources", type=str, default=None)
+    p_run.add_argument("--country", "-c", type=str, default=None, help="Filter proxies by country code (e.g. US, DE, FR)")
+    p_run.add_argument("--no-geoip", "--skip-geoip", action="store_true", help="Disable automatic GeoIP calculation")
     p_run.add_argument("--serve", action="store_true", help="Start local forward proxy gateway on ports 3030..3039")
     p_run.add_argument("--slots", type=int, default=10, help="Number of forward proxy gateway slots (default: 10)")
     p_run.add_argument("--base-port", type=int, default=3030, help="Starting base port for gateway slots (default: 3030)")
@@ -653,6 +677,7 @@ def main():
     p_sync.add_argument("--db", type=str, default=str(DEFAULT_DB_PATH), help="Path to SQLite database")
     p_sync.add_argument("--sources", type=str, default=None, help="Directory for cached feed files")
     p_sync.add_argument("--concurrency", type=int, default=10, help="Concurrent workers for feed download")
+    p_sync.add_argument("--no-geoip", "--skip-geoip", action="store_true", help="Disable GeoIP calculation during ingestion")
     p_sync.add_argument("--force", action="store_true", help="Force re-download even if fresh (<24h)")
     p_sync.set_defaults(func=cmd_sync)
 
@@ -662,6 +687,7 @@ def main():
     p_test.add_argument("--workers", "-w", type=int, default=25, help="Concurrent test workers (default: 25)")
     p_test.add_argument("--keepalive", type=int, default=180, help="Heartbeat re-check interval in seconds (default: 180s)")
     p_test.add_argument("--timeout", type=float, default=6.0, help="Socket timeout per test (default: 6.0s)")
+    p_test.add_argument("--country", "-c", type=str, default=None, help="Filter candidates to test by country code (e.g. US, DE)")
     p_test.add_argument("--db", type=str, default=str(DEFAULT_DB_PATH), help="Path to SQLite database")
     p_test.add_argument("--proxy", type=str, default=None, help="Test a single specific proxy URI")
     p_test.set_defaults(func=cmd_test)
@@ -689,6 +715,7 @@ def main():
     p_gateway.add_argument("--slots", type=int, default=10, help="Number of forward proxy slots (default: 10)")
     p_gateway.add_argument("--base-port", type=int, default=3030, help="Starting base port (default: 3030)")
     p_gateway.add_argument("--host", type=str, default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
+    p_gateway.add_argument("--country", "-c", type=str, default=None, help="Filter gateway proxy slots by country code (e.g. US, DE)")
     p_gateway.add_argument("--site", type=str, default=None, help="Target qualification site")
     p_gateway.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
     p_gateway.add_argument("--daemon", action="store_true", help="Run gateway as background daemon")
