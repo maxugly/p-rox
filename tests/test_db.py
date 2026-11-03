@@ -109,3 +109,63 @@ def test_proxydb_keepalive_priority_and_reset(tmp_path):
     assert stats["untested"] == 2
     assert stats["alive"] == 0
 
+
+def test_proxydb_pool_analytics(tmp_path):
+    import time
+    db = ProxyDB(db_path=tmp_path / "analytics.db")
+
+    # Empty DB analytics
+    empty_stats = db.get_pool_analytics()
+    assert empty_stats["total"] == 0
+    assert empty_stats["alive"] == 0
+    assert empty_stats["avg_ping"] == 0.0
+    assert empty_stats["stdev_ping"] == 0.0
+    assert empty_stats["countries"] == []
+    assert empty_stats["anonymity"] == {}
+
+    # Insert test proxies
+    p1 = Proxy(scheme="http", host="1.1.1.1", port=8080)
+    p2 = Proxy(scheme="http", host="2.2.2.2", port=8080)
+    p3 = Proxy(scheme="http", host="3.3.3.3", port=8080)
+    db.upsert_batch([p1, p2, p3])
+
+    # Record 2 alive, 1 dead
+    now = time.time()
+    db.record_test_result(
+        url=p1.url,
+        is_alive=True,
+        latency_ms=100.0,
+        country="US (Virginia)",
+        anonymity="elite",
+    )
+    db.record_test_result(
+        url=p2.url,
+        is_alive=True,
+        latency_ms=200.0,
+        country="DE (Frankfurt)",
+        anonymity="elite",
+    )
+    db.record_test_result(url=p3.url, is_alive=False)
+
+    # Manually tweak first_seen_alive to test lifetime calculation
+    with db.get_connection() as conn:
+        conn.execute("UPDATE proxies SET first_seen_alive = ? WHERE url = ?", (now - 600.0, p1.url))
+        conn.execute("UPDATE proxies SET first_seen_alive = ? WHERE url = ?", (now - 300.0, p2.url))
+
+    analytics = db.get_pool_analytics()
+    assert analytics["total"] == 3
+    assert analytics["alive"] == 2
+    assert analytics["dead"] == 1
+    assert analytics["untested"] == 0
+    assert analytics["avg_ping"] == 150.0
+    assert analytics["stdev_ping"] > 0
+    assert analytics["oldest_alive_s"] >= 599.0
+    assert analytics["avg_life_s"] >= 440.0
+    assert len(analytics["countries"]) == 2
+    # Verify country codes extracted as two-letter uppercase
+    codes = {c[0] for c in analytics["countries"]}
+    assert "US" in codes
+    assert "DE" in codes
+    assert analytics["anonymity"].get("ELITE") == 2
+
+

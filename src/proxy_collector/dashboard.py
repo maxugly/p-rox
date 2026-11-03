@@ -1,12 +1,213 @@
 """Terminal dashboard rendering and ANSI layout formatters."""
 
+import re
+import shutil
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+ANSI_REGEX = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def visible_len(text: str) -> int:
+    """Return visible character width ignoring ANSI escape codes."""
+    return len(ANSI_REGEX.sub("", text))
+
+
+def format_duration(seconds: float) -> str:
+    """Format duration in seconds into human-readable compact string."""
+    s = int(max(0, seconds))
+    if s < 60:
+        return f"{s}s"
+    elif s < 3600:
+        m, sec = divmod(s, 60)
+        return f"{m}m {sec:02d}s"
+    else:
+        h, rem = divmod(s, 3600)
+        m, sec = divmod(rem, 60)
+        return f"{h}h {m:02d}m"
+
+
+def format_uptime(seconds: float) -> str:
+    """Format uptime seconds into HH:MM:SS format."""
+    s = int(max(0, seconds))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{sec:02d}"
+
+
+def _format_country_list(countries: List[Tuple[str, int]], max_width: int) -> str:
+    """Format list of (country_code, count) into a dense string with overflow indicator."""
+    if not countries:
+        return "(Waiting for verified proxies...)"
+    shown: List[str] = []
+    for i, (code, cnt) in enumerate(countries):
+        item = f"{code}: {cnt}"
+        if i == len(countries) - 1:
+            candidate = " │ ".join(shown + [item])
+            if len(candidate) <= max_width:
+                shown.append(item)
+            else:
+                shown.append("(+1 more)")
+            break
+        remaining = len(countries) - (i + 1)
+        suffix = f" (+{remaining} more)"
+        candidate = " │ ".join(shown + [item]) + suffix
+        if len(candidate) <= max_width:
+            shown.append(item)
+        else:
+            shown.append(f"(+{len(countries) - i} more)")
+            break
+    return " │ ".join(shown)
+
+
+def _box_line(content: str, width: int) -> str:
+    """Wrap content in │ borders padded or truncated to target width."""
+    inner_width = max(0, width - 4)  # "│ " + content + " │"
+    vlen = visible_len(content)
+    if vlen > inner_width:
+        plain = ANSI_REGEX.sub("", content)
+        content = plain[: max(0, inner_width - 1)] + "…"
+        vlen = visible_len(content)
+    pad = " " * max(0, inner_width - vlen)
+    return f"│ {content}{pad} │"
+
+
+def render_sticky_header(
+    analytics: Dict[str, Any],
+    session_died: int = 0,
+    uptime_s: float = 0.0,
+    speed: float = 0.0,
+    workers: int = 25,
+    heartbeat_s: float = 180.0,
+    width: Optional[int] = None,
+) -> List[str]:
+    """Render the 6-line sticky status box for the top of the terminal."""
+    if width is None:
+        cols, _ = shutil.get_terminal_size(fallback=(80, 24))
+        width = max(70, min(cols, 120))
+
+    title = " p-rox pool monitor "
+    bar_len = max(0, width - 2 - len(title))
+    top_border = f"┌─{title}{'─' * max(0, bar_len - 1)}┐" if bar_len >= 1 else f"┌{'─' * (width - 2)}┐"
+
+    # Line 1: Session Uptime & Configuration
+    line1 = (
+        f"Uptime: \033[1m{format_uptime(uptime_s)}\033[0m │ "
+        f"Speed: \033[1m{speed:.1f}/s\033[0m │ "
+        f"Workers: \033[1m{workers}\033[0m │ "
+        f"Heartbeat: \033[1m{int(heartbeat_s)}s\033[0m"
+    )
+
+    # Line 2: Pool Counts
+    total = analytics.get("total", 0)
+    untested = analytics.get("untested", 0)
+    alive = analytics.get("alive", 0)
+    dead = analytics.get("dead", 0)
+    line2 = (
+        f"Pool: \033[1m{total:,}\033[0m Total │ "
+        f"{untested:,} Untested │ "
+        f"\033[1;92m{alive} ALIVE\033[0m │ "
+        f"\033[93m{dead} Dead\033[0m (\033[91m{session_died} Died\033[0m)"
+    )
+
+    # Line 3: Latency & Lifetimes
+    avg_ping = analytics.get("avg_ping", 0.0)
+    stdev_ping = analytics.get("stdev_ping", 0.0)
+    avg_life = analytics.get("avg_life_s", 0.0)
+    oldest_life = analytics.get("oldest_alive_s", 0.0)
+    anon_dict = analytics.get("anonymity", {})
+    elite_cnt = anon_dict.get("ELITE", 0)
+
+    if alive > 0:
+        ping_str = f"Ping: \033[1m{avg_ping:.0f}ms\033[0m (±{stdev_ping:.0f}ms)"
+        life_str = f"Avg Life: \033[1m{format_duration(avg_life)}\033[0m"
+        oldest_str = f"Oldest: \033[1m{format_duration(oldest_life)}\033[0m"
+        elite_pct = int(elite_cnt / alive * 100) if alive else 0
+        elite_str = f"Elite: \033[1m{elite_pct}%\033[0m ({elite_cnt})"
+    else:
+        ping_str = "Ping: -"
+        life_str = "Avg Life: -"
+        oldest_str = "Oldest: -"
+        elite_str = "Elite: -"
+
+    line3 = f"{ping_str} │ {life_str} │ {oldest_str} │ {elite_str}"
+
+    # Line 4: Dense Countries List
+    countries = analytics.get("countries", [])
+    total_countries = len(countries)
+    prefix = f"Countries ({total_countries}): " if total_countries > 0 else "Countries: "
+    avail_width = max(20, width - 4 - len(prefix))
+    line4 = f"{prefix}{_format_country_list(countries, avail_width)}"
+
+    bottom_border = f"└{'─' * (width - 2)}┘"
+
+    return [
+        top_border,
+        _box_line(line1, width),
+        _box_line(line2, width),
+        _box_line(line3, width),
+        _box_line(line4, width),
+        bottom_border,
+    ]
+
+
+class StickyTerminal:
+    """Manages DECSTBM terminal scroll margins for a sticky top header with scrolling logs."""
+
+    def __init__(self, header_lines: int = 6, enabled: Optional[bool] = None):
+        self.header_lines = header_lines
+        self.enabled = sys.stdout.isatty() if enabled is None else enabled
+        self._initialized = False
+
+    def init_terminal(self):
+        """Set DECSTBM scrolling margin below the sticky header."""
+        if not self.enabled or self._initialized:
+            return
+        cols, rows = shutil.get_terminal_size(fallback=(80, 24))
+        top_margin = self.header_lines + 2  # Leave 1 blank line below header
+        sys.stdout.write(f"\033[2J\033[{top_margin};{rows}r\033[{top_margin};1H")
+        sys.stdout.flush()
+        self._initialized = True
+
+    def update_header(self, lines: List[str]):
+        """Redraw sticky header at top of terminal without altering log cursor."""
+        if not self.enabled:
+            return
+        if not self._initialized:
+            self.init_terminal()
+        sys.stdout.write("\033[s")  # Save cursor
+        for idx, line in enumerate(lines, start=1):
+            sys.stdout.write(f"\033[{idx};1H\033[K{line}")
+        sys.stdout.write("\033[u")  # Restore cursor
+        sys.stdout.flush()
+
+    def print_log(self, text: str):
+        """Output a log line into the scrolling margin."""
+        if not self.enabled:
+            print(text)
+            return
+        if not self._initialized:
+            self.init_terminal()
+        sys.stdout.write(text + "\n")
+        sys.stdout.flush()
+
+    def restore(self):
+        """Reset terminal scrolling margin and restore cursor to normal."""
+        if not self.enabled or not self._initialized:
+            return
+        cols, rows = shutil.get_terminal_size(fallback=(80, 24))
+        sys.stdout.write(f"\033[r\033[{rows};1H\n")
+        sys.stdout.flush()
+        self._initialized = False
 
 
 class TerminalDashboard:
     """Formats and prints live terminal status matrices for slots, pools, and profiles."""
+
+    render_sticky_header = staticmethod(render_sticky_header)
+    format_duration = staticmethod(format_duration)
+    format_uptime = staticmethod(format_uptime)
 
     @staticmethod
     def render_gateway_dashboard(

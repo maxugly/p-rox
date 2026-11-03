@@ -69,3 +69,114 @@ def test_print_profile_card(capsys):
     assert "ELITE" in captured
     assert "25.0ms" in captured
     assert "Clean (Valid CA)" in captured
+
+
+def test_format_helpers():
+    from proxy_collector.dashboard import format_duration, format_uptime, visible_len
+
+    assert format_duration(45) == "45s"
+    assert format_duration(125) == "2m 05s"
+    assert format_duration(3665) == "1h 01m"
+
+    assert format_uptime(45) == "00:00:45"
+    assert format_uptime(125) == "00:02:05"
+    assert format_uptime(3665) == "01:01:05"
+
+    assert visible_len("\033[1;92mALIVE\033[0m") == 5
+    assert visible_len("plain text") == 10
+
+
+def test_render_sticky_header_empty():
+    from proxy_collector.dashboard import ANSI_REGEX, render_sticky_header
+
+    analytics = {
+        "total": 100,
+        "untested": 100,
+        "alive": 0,
+        "dead": 0,
+        "avg_ping": 0.0,
+        "stdev_ping": 0.0,
+        "avg_life_s": 0.0,
+        "oldest_alive_s": 0.0,
+        "countries": [],
+        "anonymity": {},
+    }
+
+    lines = render_sticky_header(
+        analytics=analytics,
+        session_died=0,
+        uptime_s=10.0,
+        speed=5.0,
+        workers=10,
+        heartbeat_s=180.0,
+        width=80,
+    )
+
+    assert len(lines) == 6
+    assert lines[0].startswith("┌─ p-rox pool monitor")
+    assert lines[-1].startswith("└")
+
+    plain_lines = [ANSI_REGEX.sub("", l) for l in lines]
+    assert "100 Total" in plain_lines[2]
+    assert "0 ALIVE" in plain_lines[2]
+    assert "0 Dead (0 Died)" in plain_lines[2]
+    assert "Ping: -" in plain_lines[3]
+    assert "Avg Life: -" in plain_lines[3]
+    assert "Waiting for verified proxies" in plain_lines[4]
+
+
+def test_render_sticky_header_populated():
+    from proxy_collector.dashboard import ANSI_REGEX, render_sticky_header
+
+    analytics = {
+        "total": 2050404,
+        "untested": 2050300,
+        "alive": 14,
+        "dead": 90,
+        "avg_ping": 118.4,
+        "stdev_ping": 24.1,
+        "avg_life_s": 750.0,
+        "oldest_alive_s": 2892.0,
+        "countries": [("US", 8), ("DE", 3), ("CA", 2), ("GB", 1)],
+        "anonymity": {"ELITE": 13, "ANONYMOUS": 1},
+    }
+
+    lines = render_sticky_header(
+        analytics=analytics,
+        session_died=12,
+        uptime_s=252.0,
+        speed=18.2,
+        workers=25,
+        heartbeat_s=180.0,
+        width=80,
+    )
+
+    assert len(lines) == 6
+    plain_lines = [ANSI_REGEX.sub("", l) for l in lines]
+    assert "00:04:12" in plain_lines[1]
+    assert "18.2/s" in plain_lines[1]
+    assert "2,050,404 Total" in plain_lines[2]
+    assert "14 ALIVE" in plain_lines[2]
+    assert "90 Dead (12 Died)" in plain_lines[2]
+    assert "Ping: 118ms (±24ms)" in plain_lines[3]
+    assert "Avg Life: 12m 30s" in plain_lines[3]
+    assert "Oldest: 48m 12s" in plain_lines[3]
+    assert "Elite: 92% (13)" in plain_lines[3]
+    assert "US: 8" in plain_lines[4]
+    assert "DE: 3" in plain_lines[4]
+
+
+def test_sticky_terminal_disabled_mode(capsys):
+    from proxy_collector.dashboard import StickyTerminal
+
+    term = StickyTerminal(header_lines=6, enabled=False)
+    assert not term.enabled
+
+    term.init_terminal()
+    term.update_header(["line 1", "line 2"])
+    term.print_log("hello log")
+    term.restore()
+
+    captured = capsys.readouterr().out
+    assert "hello log" in captured
+

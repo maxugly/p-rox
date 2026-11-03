@@ -1,9 +1,11 @@
 """SQLite database layer for p-rox proxy storage, status tracking, and rotation."""
 
+import collections
 import sqlite3
+import statistics
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 DEFAULT_DB_PATH = Path.home() / ".p-rox" / "proxies.db"
 
@@ -46,6 +48,7 @@ class ProxyDB:
                     asn TEXT,
                     anonymity TEXT,
                     fails INTEGER DEFAULT 0,
+                    first_seen_alive REAL,
                     last_checked_at REAL,
                     created_at REAL DEFAULT (strftime('%s', 'now'))
                 );
@@ -55,6 +58,11 @@ class ProxyDB:
                 CREATE INDEX IF NOT EXISTS idx_last_checked ON proxies(last_checked_at);
                 """
             )
+            # Migration: add first_seen_alive column if upgrading existing database
+            try:
+                conn.execute("ALTER TABLE proxies ADD COLUMN first_seen_alive REAL;")
+            except sqlite3.OperationalError:
+                pass
 
     def upsert_batch(self, proxies: Iterable[Any], batch_size: int = 10000) -> int:
         """Bulk insert proxy candidates. Skips existing URLs.
@@ -189,10 +197,11 @@ class ProxyDB:
                         asn = ?,
                         anonymity = ?,
                         fails = 0,
+                        first_seen_alive = COALESCE(first_seen_alive, ?),
                         last_checked_at = ?
                     WHERE url = ?
                     """,
-                    (latency_ms, ttfb_ms, egress_ip, country, city, asn, anonymity, now, url),
+                    (latency_ms, ttfb_ms, egress_ip, country, city, asn, anonymity, now, now, url),
                 )
             else:
                 conn.execute(
@@ -200,6 +209,7 @@ class ProxyDB:
                     UPDATE proxies
                     SET status = 'dead',
                         fails = fails + 1,
+                        first_seen_alive = NULL,
                         last_checked_at = ?
                     WHERE url = ?
                     """,
@@ -241,6 +251,7 @@ class ProxyDB:
                         asn = NULL,
                         anonymity = NULL,
                         fails = 0,
+                        first_seen_alive = NULL,
                         last_checked_at = NULL
                     """
                 )
@@ -254,6 +265,7 @@ class ProxyDB:
                 UPDATE proxies
                 SET status = 'dead',
                     fails = fails + 1,
+                    first_seen_alive = NULL,
                     last_checked_at = ?
                 WHERE url = ?
                 """,
@@ -277,4 +289,57 @@ class ProxyDB:
             "dead": dead,
             "db_path": str(self.db_path),
             "db_size_mb": round(file_size_bytes / (1024 * 1024), 2),
+        }
+
+    def get_pool_analytics(self) -> Dict[str, Any]:
+        """Compute aggregate pool metrics: ping distribution, age/lifetimes, countries, anonymity."""
+        stats = self.get_stats()
+        now = time.time()
+
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT latency_ms, first_seen_alive, country, anonymity
+                FROM proxies
+                WHERE status = 'alive'
+                """
+            ).fetchall()
+
+        latencies = [r["latency_ms"] for r in rows if r["latency_ms"] is not None]
+        avg_ping = statistics.mean(latencies) if latencies else 0.0
+        stdev_ping = statistics.stdev(latencies) if len(latencies) > 1 else 0.0
+
+        lifetimes = [max(0.0, now - r["first_seen_alive"]) for r in rows if r["first_seen_alive"] is not None]
+        avg_life_s = statistics.mean(lifetimes) if lifetimes else 0.0
+        oldest_alive_s = max(lifetimes) if lifetimes else 0.0
+
+        country_counts: collections.Counter = collections.Counter()
+        for r in rows:
+            c = r["country"]
+            if c:
+                code = c.strip().split()[0].upper()[:2]
+                country_counts[code] += 1
+            else:
+                country_counts["??"] += 1
+
+        countries = sorted(country_counts.items(), key=lambda x: (-x[1], x[0]))
+
+        anon_counts: collections.Counter = collections.Counter()
+        for r in rows:
+            a = r["anonymity"]
+            anon_counts[a.upper() if a else "UNKNOWN"] += 1
+
+        return {
+            "total": stats["total"],
+            "untested": stats["untested"],
+            "alive": stats["alive"],
+            "dead": stats["dead"],
+            "db_path": stats["db_path"],
+            "db_size_mb": stats["db_size_mb"],
+            "avg_ping": round(avg_ping, 1),
+            "stdev_ping": round(stdev_ping, 1),
+            "avg_life_s": round(avg_life_s, 1),
+            "oldest_alive_s": round(oldest_alive_s, 1),
+            "countries": countries,
+            "anonymity": dict(anon_counts),
         }

@@ -188,6 +188,7 @@ def run_continuous_worker(
     stop = stop_event or threading.Event()
     resolver = GeoIPResolver()
     total_tested = 0
+    session_died = 0
     start_time = time.monotonic()
 
     while not stop.is_set():
@@ -202,6 +203,8 @@ def run_continuous_worker(
         )
 
         batch_tested = res.get("tested", 0)
+        batch_dead = res.get("dead", 0)
+        session_died += batch_dead
         total_tested += batch_tested
         elapsed = time.monotonic() - start_time
         rate = total_tested / elapsed if elapsed > 0 else 0.0
@@ -210,6 +213,8 @@ def run_continuous_worker(
             stats = db.get_stats()
             stats["rate_per_sec"] = round(rate, 1)
             stats["total_tested_session"] = total_tested
+            stats["session_died"] = session_died
+            stats["uptime_s"] = elapsed
             on_tick(stats, rate)
 
         if batch_tested == 0:

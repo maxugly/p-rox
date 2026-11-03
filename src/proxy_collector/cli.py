@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .dashboard import TerminalDashboard
+from .dashboard import StickyTerminal, TerminalDashboard, render_sticky_header
 from .db import DEFAULT_DB_PATH, ProxyDB
 from .gateway import GatewayServer
 from .geoip import GeoIPResolver, download_dbip_lite, download_maxmind_geolite2
@@ -46,12 +46,7 @@ def cmd_run(args):
     keepalive = getattr(args, "keepalive", 180.0)
     timeout = getattr(args, "timeout", 6.0)
 
-    print("=" * 80)
-    print("  p-rox — Continuous Live Proxy Acquisition & Pool Maintenance")
-    print(f"  Workers: {workers} | 3-Min Heartbeat: {keepalive}s | Database: {db.db_path}")
-    print("  Press Ctrl+C to stop cleanly.")
-    print("=" * 80)
-
+    terminal = StickyTerminal(header_lines=6)
     stop_event = threading.Event()
 
     def signal_handler(*_):
@@ -63,6 +58,26 @@ def cmd_run(args):
         except (ValueError, RuntimeError):
             pass
 
+    # Draw initial sticky header
+    initial_analytics = db.get_pool_analytics()
+    if terminal.enabled:
+        terminal.init_terminal()
+        header_lines = render_sticky_header(
+            analytics=initial_analytics,
+            session_died=0,
+            uptime_s=0.0,
+            speed=0.0,
+            workers=workers,
+            heartbeat_s=keepalive,
+        )
+        terminal.update_header(header_lines)
+    else:
+        print("=" * 80)
+        print("  p-rox — Continuous Live Proxy Acquisition & Pool Maintenance")
+        print(f"  Workers: {workers} | 3-Min Heartbeat: {keepalive}s | Database: {db.db_path}")
+        print("  Press Ctrl+C to stop cleanly.")
+        print("=" * 80)
+
     def on_result(candidate, is_alive, profile):
         url = candidate.get("url") or f"{candidate.get('scheme')}://{candidate.get('host')}:{candidate.get('port')}"
         if is_alive:
@@ -71,14 +86,31 @@ def cmd_run(args):
             loc = f"{geo.country_code} {geo.city}" if (geo and geo.city) else (geo.country_code if geo else "??")
             anon = profile.security.anonymity.upper() if profile.security else ""
             egress = profile.egress_ip or ""
-            print(f"  \033[92m[ALIVE]\033[0m {url:35} {lat:>6}  {loc:16} {anon:7} (Egress: {egress})")
+            line = f"  \033[92m[ALIVE]\033[0m {url:35} {lat:>6}  {loc:16} {anon:7} (Egress: {egress})"
         else:
             reason = getattr(profile, "last_reason", "") or "failed"
-            print(f"  \033[91m[DEAD ]\033[0m {url:35} {reason}")
+            line = f"  \033[91m[DEAD ]\033[0m {url:35} {reason}"
+        terminal.print_log(line)
 
     def on_tick(cur_stats, rate):
-        header = f"  --- Pool: \033[92m{cur_stats['alive']} ALIVE\033[0m | {cur_stats['untested']:,} untested | Speed: {rate:.1f} tests/sec ---"
-        print(f"\n{header}\n")
+        analytics = db.get_pool_analytics()
+        session_died = cur_stats.get("session_died", 0)
+        uptime_s = cur_stats.get("uptime_s", 0.0)
+        if terminal.enabled:
+            header_lines = render_sticky_header(
+                analytics=analytics,
+                session_died=session_died,
+                uptime_s=uptime_s,
+                speed=rate,
+                workers=workers,
+                heartbeat_s=keepalive,
+            )
+            terminal.update_header(header_lines)
+        else:
+            alive = cur_stats.get("alive", 0)
+            untested = cur_stats.get("untested", 0)
+            dead = cur_stats.get("dead", 0)
+            print(f"--- Pool: {alive} ALIVE | {untested:,} untested | {dead} Dead ({session_died} Died) | Speed: {rate:.1f}/s ---")
 
     try:
         run_continuous_worker(
@@ -93,6 +125,8 @@ def cmd_run(args):
         )
     except KeyboardInterrupt:
         stop_event.set()
+    finally:
+        terminal.restore()
 
     print("\n" + "-" * 80)
     final_stats = db.get_stats()
@@ -207,17 +241,21 @@ def cmd_test(args):
 def cmd_status(args):
     """Query transparent database stats and proxy pool maintenance health."""
     db = ProxyDB(db_path=args.db)
-    stats = db.get_stats()
+    analytics = db.get_pool_analytics()
     alive_sample = db.get_alive_proxies(limit=8)
 
     print("=" * 70)
     print("  p-rox — Proxy Pool Status")
     print("=" * 70)
-    print(f"  Database:           {stats['db_path']} ({stats['db_size_mb']} MB)")
-    print(f"  Total Candidates:   {stats['total']:,}")
-    print(f"  Untested:           {stats['untested']:,}")
-    print(f"  Verified Alive:     \033[92m{stats['alive']:,}\033[0m")
-    print(f"  Dead / Benched:     \033[91m{stats['dead']:,}\033[0m")
+    print(f"  Database:           {analytics['db_path']} ({analytics['db_size_mb']} MB)")
+    print(f"  Total Candidates:   {analytics['total']:,}")
+    print(f"  Untested:           {analytics['untested']:,}")
+    print(f"  Verified Alive:     \033[92m{analytics['alive']:,}\033[0m")
+    print(f"  Dead / Benched:     \033[91m{analytics['dead']:,}\033[0m")
+    if analytics["alive"] > 0:
+        c_str = ", ".join(f"{c[0]}: {c[1]}" for c in analytics["countries"][:10])
+        print(f"  Ping Performance:   {analytics['avg_ping']:.0f}ms (±{analytics['stdev_ping']:.0f}ms)")
+        print(f"  Top Countries:      {c_str}")
 
     if alive_sample:
         print("-" * 70)

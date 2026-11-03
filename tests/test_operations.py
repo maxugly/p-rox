@@ -67,3 +67,32 @@ def test_test_candidates_mocked(tmp_path):
     assert res["dead"] == 1
     assert db.get_stats()["alive"] == 1
     assert db.get_stats()["dead"] == 1
+
+
+def test_run_continuous_worker_tracks_died(tmp_path):
+    import threading
+
+    db = ProxyDB(db_path=tmp_path / "test.db")
+    stop_event = threading.Event()
+    ticks = []
+
+    def on_tick(stats, rate):
+        ticks.append((stats, rate))
+        stop_event.set()
+
+    with patch("proxy_collector.operations.test_candidates") as mock_test:
+        mock_test.return_value = {"tested": 10, "alive": 2, "dead": 8}
+        ops.run_continuous_worker(
+            db=db,
+            workers=2,
+            batch_size=10,
+            stop_event=stop_event,
+            on_tick=on_tick,
+        )
+
+    assert len(ticks) >= 1
+    stats, rate = ticks[0]
+    assert stats["session_died"] == 8
+    assert stats["total_tested_session"] == 10
+    assert "uptime_s" in stats
+
