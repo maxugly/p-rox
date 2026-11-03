@@ -73,9 +73,24 @@ def cmd_run(args):
         except (ValueError, RuntimeError):
             pass
 
+    initial_unresolved = db.get_unresolved_geoip_count()
+    geoip_state = {
+        "unresolved": initial_unresolved,
+        "resolved": max(0, stats["total"] - initial_unresolved),
+        "total": stats["total"],
+    }
+
+    def _on_geoip_batch(batch_count, total_resolved):
+        geoip_state["unresolved"] = max(0, geoip_state["unresolved"] - batch_count)
+        geoip_state["resolved"] += batch_count
+
     # 2. Launch background GeoIP resolver thread for unpopulated candidates if enabled
     if not no_geoip:
-        start_background_geoip_thread(db=db, stop_event=stop_event)
+        start_background_geoip_thread(
+            db=db,
+            stop_event=stop_event,
+            on_batch_complete=_on_geoip_batch,
+        )
 
     # 3. Start Gateway Server if --serve is requested
     server = None
@@ -122,6 +137,9 @@ def cmd_run(args):
         if not terminal.enabled:
             return
         cur_analytics = db.get_pool_analytics()
+        cur_analytics["unresolved_geoip"] = geoip_state["unresolved"]
+        cur_analytics["resolved_geoip"] = geoip_state["resolved"]
+        cur_analytics["no_geoip"] = no_geoip
         elapsed = time.monotonic() - start_time
         cur_header = render_sticky_header(
             analytics=cur_analytics,
@@ -202,6 +220,12 @@ def cmd_run(args):
         print("=" * 80)
         print("  p-rox — Continuous Live Proxy Acquisition & Pool Maintenance")
         print(f"  Workers: {workers} | 3-Min Heartbeat: {keepalive}s | Database: {db.db_path}")
+        if country:
+            print(f"  Country Filter: {country.upper()}")
+        if initial_unresolved > 0 and not no_geoip:
+            print(f"  GeoIP: Resolving {initial_unresolved:,} candidates in background thread...")
+        elif not no_geoip:
+            print(f"  GeoIP: 100% mapped ({stats['total']:,} candidates)")
         if serve_enabled and server:
             print(f"  Gateway: {server.slots_count} slots on {server.host}:{server.base_port}..{server.base_port + server.slots_count - 1}")
         print("  Press Ctrl+C to stop cleanly.")
@@ -456,6 +480,13 @@ def cmd_status(args):
     print(f"  Untested:           {analytics['untested']:,}")
     print(f"  Verified Alive:     \033[92m{analytics['alive']:,}\033[0m")
     print(f"  Dead / Benched:     \033[91m{analytics['dead']:,}\033[0m")
+    unres = analytics.get("unresolved_geoip", 0)
+    res_geo = analytics.get("resolved_geoip", max(0, analytics["total"] - unres))
+    if unres > 0:
+        pct = (res_geo / analytics["total"] * 100) if analytics["total"] > 0 else 0
+        print(f"  GeoIP Coverage:     {res_geo:,} mapped ({unres:,} to lookup, {pct:.1f}%)")
+    else:
+        print(f"  GeoIP Coverage:     \033[92m100% mapped\033[0m ({res_geo:,} candidates)")
     if analytics["alive"] > 0:
         total_alive = analytics["alive"]
         c_parts = []

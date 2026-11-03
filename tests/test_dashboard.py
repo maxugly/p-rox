@@ -250,3 +250,40 @@ def test_sticky_terminal_disabled_mode(capsys):
     captured = capsys.readouterr().out
     assert "hello log" in captured
 
+
+def test_render_sticky_header_geoip_resolving():
+    from proxy_collector.dashboard import ANSI_REGEX, render_sticky_header
+
+    analytics = {
+        "total": 2000,
+        "untested": 1500,
+        "alive": 10,
+        "dead": 20,
+        "avg_ping": 100.0,
+        "stdev_ping": 10.0,
+        "avg_life_s": 60.0,
+        "oldest_alive_s": 120.0,
+        "countries": [("US", 10)],
+        "anonymity": {"ELITE": 10},
+        "unresolved_geoip": 500,
+        "resolved_geoip": 1500,
+    }
+
+    lines = render_sticky_header(
+        analytics=analytics,
+        session_died=0,
+        uptime_s=30.0,
+        speed=15.0,
+        workers=20,
+        heartbeat_s=180.0,
+        width=80,
+    )
+
+    plain_lines = [ANSI_REGEX.sub("", l) for l in lines]
+    all_text = "\n".join(plain_lines)
+
+    assert "GeoIP Resolving: 1,500 mapped" in all_text
+    assert "500 to lookup ↓" in all_text
+    assert "75%" in all_text
+
+

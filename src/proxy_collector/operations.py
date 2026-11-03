@@ -423,6 +423,7 @@ def start_background_geoip_thread(
     resolver: Optional[GeoIPResolver] = None,
     stop_event: Optional[Any] = None,
     batch_size: int = 5000,
+    on_batch_complete: Optional[Callable[[int, int], None]] = None,
 ) -> Optional[threading.Thread]:
     """Start background GeoIP worker thread if unpopulated candidates exist and database is available."""
     r = resolver or GeoIPResolver()
@@ -436,7 +437,7 @@ def start_background_geoip_thread(
     stop = stop_event or threading.Event()
     t = threading.Thread(
         target=run_background_geoip_worker,
-        args=(db, r, stop, batch_size),
+        args=(db, r, stop, batch_size, on_batch_complete),
         name="p-rox-geoip-resolver",
         daemon=True,
     )

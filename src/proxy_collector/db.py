@@ -375,12 +375,13 @@ class ProxyDB:
             )
 
     def get_stats(self) -> Dict[str, Any]:
-        """Return counts of total, untested, alive, and dead proxies in the database."""
+        """Return counts of total, untested, alive, dead, and GeoIP resolved proxies in the database."""
         with self.get_connection() as conn:
             total = conn.execute("SELECT COUNT(*) FROM proxies").fetchone()[0]
             untested = conn.execute("SELECT COUNT(*) FROM proxies WHERE status = 'untested'").fetchone()[0]
             alive = conn.execute("SELECT COUNT(*) FROM proxies WHERE status = 'alive'").fetchone()[0]
             dead = conn.execute("SELECT COUNT(*) FROM proxies WHERE status = 'dead'").fetchone()[0]
+            unresolved_geoip = conn.execute("SELECT COUNT(*) FROM proxies WHERE country IS NULL OR country = ''").fetchone()[0]
 
         file_size_bytes = self.db_path.stat().st_size if self.db_path.exists() else 0
 
@@ -389,6 +390,8 @@ class ProxyDB:
             "untested": untested,
             "alive": alive,
             "dead": dead,
+            "unresolved_geoip": unresolved_geoip,
+            "resolved_geoip": max(0, total - unresolved_geoip),
             "db_path": str(self.db_path),
             "db_size_mb": round(file_size_bytes / (1024 * 1024), 2),
         }
@@ -436,6 +439,8 @@ class ProxyDB:
             "untested": stats["untested"],
             "alive": stats["alive"],
             "dead": stats["dead"],
+            "unresolved_geoip": stats.get("unresolved_geoip", 0),
+            "resolved_geoip": stats.get("resolved_geoip", 0),
             "db_path": stats["db_path"],
             "db_size_mb": stats["db_size_mb"],
             "avg_ping": round(avg_ping, 1),

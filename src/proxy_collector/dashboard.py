@@ -154,6 +154,19 @@ def render_sticky_header(
         f"\033[93m{dead} Dead\033[0m (\033[91m{session_died} Died\033[0m)"
     )
 
+    # GeoIP Resolution Progress (numbers reflect active background lookups climbing/dropping)
+    unresolved_geoip = analytics.get("unresolved_geoip", 0)
+    resolved_geoip = analytics.get("resolved_geoip", max(0, total - unresolved_geoip))
+    geoip_line = None
+    if unresolved_geoip > 0:
+        pct = (resolved_geoip / total * 100) if total > 0 else 0.0
+        pct_str = f"{pct:.1f}%" if (pct % 1 != 0) else f"{int(pct)}%"
+        geoip_line = (
+            f"GeoIP Resolving: \033[1;92m{resolved_geoip:,}\033[0m mapped │ "
+            f"\033[1;93m{unresolved_geoip:,} to lookup ↓\033[0m │ "
+            f"\033[1m{pct_str}\033[0m"
+        )
+
     # Line 3: Latency & Lifetimes
     avg_ping = analytics.get("avg_ping", 0.0)
     stdev_ping = analytics.get("stdev_ping", 0.0)
@@ -186,8 +199,10 @@ def render_sticky_header(
         top_border,
         _box_line(line1, width),
         _box_line(line2, width),
-        _box_line(line3, width),
     ]
+    if geoip_line:
+        header.append(_box_line(geoip_line, width))
+    header.append(_box_line(line3, width))
     header.extend(country_lines)
     header.append(bottom_border)
     return header
