@@ -108,7 +108,15 @@ class ProxyService:
         """Ingest fresh, deduplicated web proxies from collector into the pool."""
         with self.writer():
             self._load()
-            collector = ProxyCollector(cache_dir=self.cache / "sources")
+            sources_dir = self.cache / "sources"
+            if not sources_dir.is_dir() or not any(sources_dir.glob("*.txt")):
+                local_sources = Path("sources")
+                if local_sources.is_dir() and any(local_sources.glob("*.txt")):
+                    sources_dir = local_sources.resolve()
+            collector = ProxyCollector(cache_dir=sources_dir)
+            cached_files = [p for p in collector.cache_dir.iterdir() if p.is_file() and not p.name.startswith(".")] if collector.cache_dir.is_dir() else []
+            if not cached_files:
+                collector.fetch()
             added = collector.ingest_into_pool(
                 self.pool,
                 limit=limit,

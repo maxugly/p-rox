@@ -38,7 +38,7 @@ class ProxyFetcher:
             if local_sources.is_dir():
                 self.cache_dir = local_sources.resolve()
             else:
-                self.cache_dir = Path.home() / ".cache" / "proxyCollector" / "sources"
+                self.cache_dir = Path.home() / ".cache" / "p-rox" / "sources"
         else:
             self.cache_dir = Path(cache_dir).expanduser().resolve()
 

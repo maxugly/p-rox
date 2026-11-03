@@ -62,7 +62,7 @@ Public proxy scraping is notoriously painful:
 
 ## Quickstart for Beginners (Zero to Hero in 60 Seconds)
 
-You don't need a degree in networking to use `p-rox`. Follow these 3 commands:
+You don't need a degree in networking to use `p-rox`. Follow this end-to-end workflow:
 
 ### 1. Install `p-rox`
 ```bash
@@ -76,7 +76,24 @@ pip install -e ".[socks]"
 p-rox update-geoip --source dbip
 ```
 
-### 3. Launch the Forward Proxy Gateway
+### 3. Ingest Fresh Candidate Proxies
+Download 52 public feeds, deduplicate in real time, and load candidates directly into the rotation pool:
+```bash
+p-rox update-pool --limit 500
+```
+*(Or use `p-rox collect -o all_proxies.txt --fetch` to export 2.2+ million deduplicated candidates to a file!)*
+
+### 4. Test & Benchmark Live Proxies
+Run high-speed dual-ping latency, anonymity tiering, and TLS tamper checks across candidates:
+```bash
+# Benchmark and display visual profile cards for candidate proxies
+p-rox profile --limit 5
+
+# Or run staged qualification (L1 Route IP echo + L2 Site qualification)
+p-rox probe --limit 20
+```
+
+### 5. Launch the Forward Proxy Gateway
 ```bash
 p-rox gateway --slots 10
 ```
@@ -93,7 +110,7 @@ curl -x http://127.0.0.1:3031 https://ifconfig.me
 ```
 
 > [!TIP]
-> **Why static ports are awesome**: If the upstream proxy dies, `p-rox` instantly swaps in a new healthy proxy in the background. Your scraper just keeps hitting `http://127.0.0.1:3030` without caring!
+> **Why static ports are awesome**: If an upstream public proxy dies, `p-rox` instantly swaps in a new healthy proxy in the background. Your scraper just keeps hitting `http://127.0.0.1:3030` without caring!
 
 ---
 

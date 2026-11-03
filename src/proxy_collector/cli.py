@@ -298,7 +298,7 @@ def cmd_profile(args):
     profiler = ProxyProfiler(geoip_resolver=geoip, timeout=args.timeout)
 
     if args.proxy:
-        p_obj = parse_line(args.proxy)
+        p_obj = next(parse_line(args.proxy), None)
         if not p_obj:
             print(f"Error: Could not parse proxy string '{args.proxy}'")
             sys.exit(1)

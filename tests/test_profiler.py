@@ -148,3 +148,33 @@ def test_concurrent_profiling():
         assert prof.latency.tcp_handshake_ms == 12.5
         assert prof.security.anonymity == "elite"
 
+
+def test_cmd_profile_cli(tmp_path, capsys):
+    from proxy_collector.cli import cmd_profile
+
+    args = MagicMock()
+    args.proxy = "http://1.2.3.4:8080"
+    args.cache_dir = str(tmp_path)
+    args.timeout = 2.0
+    args.limit = 1
+    args.concurrency = 1
+
+    mock_profile = MagicMock()
+    mock_profile.proxy = Proxy(scheme="http", host="1.2.3.4", port=8080)
+    mock_profile.egress_ip = "1.2.3.4"
+    mock_profile.geo = None
+    mock_profile.latency.tcp_handshake_ms = 15.0
+    mock_profile.latency.http_ttfb_ms = 80.0
+    mock_profile.security.anonymity = "elite"
+    mock_profile.security.tls_tampering_detected = False
+    mock_profile.tier = 1
+    mock_profile.last_probe_result = "OK"
+
+    with patch.object(ProxyProfiler, "profile", return_value=mock_profile):
+        cmd_profile(args)
+
+    out = capsys.readouterr().out
+    assert "Profiling proxy http://1.2.3.4:8080" in out
+    assert "1.2.3.4" in out
+
+
