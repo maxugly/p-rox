@@ -308,7 +308,7 @@ The test suite runs completely offline without making outbound network requests:
 pytest -v
 ```
 
-All 96 tests execute in under 1 second.
+All 97 tests execute in under 1 second.
 
 ---
 

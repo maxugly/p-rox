@@ -415,6 +415,31 @@ def test_slot_country_filter_and_waiting_countries(tmp_path):
     assert server.get_waiting_countries() == []
 
 
+def test_cli_slot_menu_rendering(tmp_path):
+    import shutil
+    from proxy_collector.db import ProxyDB
+    from proxy_collector.dashboard import TerminalDashboard
+
+    db = ProxyDB(db_path=tmp_path / "cli_menu.db")
+    items = db.get_country_menu_items()
+    cols, rows = shutil.get_terminal_size(fallback=(100, 30))
+
+    out = TerminalDashboard.render_country_menu(
+        slot_num=1,
+        port=3030,
+        current_filter="US",
+        items=items,
+        cursor_index=0,
+        search_query="",
+        term_width=cols,
+        term_height=rows,
+    )
+    assert "Slot 1 (Port 3030) Country Selection" in out
+    assert "Current: US" in out
+    assert "ANY: All Countries" in out
+
+
+
 
 
 
