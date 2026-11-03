@@ -245,6 +245,54 @@ def test_gateway_time_alive_in_dashboard():
     assert "Toggle View: [s]" in out
     assert "3030" in out
     assert "US Ashburn" in out
+    assert "Connect To Proxy:" in out
+    assert "http://127.0.0.1:3030" in out
+    assert "curl -x http://127.0.0.1:3030" in out
+
+
+def test_gateway_server_dynamic_add_and_remove_slot(tmp_path):
+    async def _test():
+        pool = ProxyPool(path=None, cache_dir=tmp_path)
+        pool._add("http", "1.1.1.1", "8080")
+        pool._add("http", "1.1.1.2", "8080")
+        pool._add("http", "1.1.1.3", "8080")
+
+        server = GatewayServer(
+            slots_count=2,
+            base_port=19300,
+            host="127.0.0.1",
+            pool=pool,
+            cache_dir=tmp_path,
+        )
+        await server.start(interactive=False)
+        assert len(server.slots) == 2
+        assert server.slots[0].port == 19300
+        assert server.slots[1].port == 19301
+
+        # Add a slot
+        new_slot = await server.add_slot()
+        assert new_slot is not None
+        assert len(server.slots) == 3
+        assert server.slots[2].port == 19302
+
+        # Remove a slot
+        removed = await server.remove_slot()
+        assert removed is not None
+        assert removed.port == 19302
+        assert len(server.slots) == 2
+
+        # Remove down to 1
+        await server.remove_slot()
+        assert len(server.slots) == 1
+
+        # Cannot remove below 1 slot
+        cannot_remove = await server.remove_slot()
+        assert cannot_remove is None
+        assert len(server.slots) == 1
+
+        await server.stop()
+
+    asyncio.run(_test())
 
 
 def test_cli_serve_flag_parser():

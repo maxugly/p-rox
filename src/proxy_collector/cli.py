@@ -153,6 +153,34 @@ def cmd_run(args):
                 terminal.init_terminal()
                 _draw_monitor_header()
 
+    def handle_add_slot():
+        if not serve_enabled or not server or not gateway_loop or not gateway_loop.is_running():
+            return
+        fut = asyncio.run_coroutine_threadsafe(server.add_slot(), gateway_loop)
+        try:
+            fut.result(timeout=1.5)
+        except Exception:
+            pass
+        with view_lock:
+            if active_view[0] == VIEW_SERVER:
+                _draw_server_view()
+            elif active_view[0] == VIEW_MONITOR:
+                _draw_monitor_header()
+
+    def handle_remove_slot():
+        if not serve_enabled or not server or not gateway_loop or not gateway_loop.is_running():
+            return
+        fut = asyncio.run_coroutine_threadsafe(server.remove_slot(), gateway_loop)
+        try:
+            fut.result(timeout=1.5)
+        except Exception:
+            pass
+        with view_lock:
+            if active_view[0] == VIEW_SERVER:
+                _draw_server_view()
+            elif active_view[0] == VIEW_MONITOR:
+                _draw_monitor_header()
+
     # Draw initial sticky header
     if terminal.enabled:
         terminal.init_terminal()
@@ -211,6 +239,10 @@ def cmd_run(args):
                     ch = sys.stdin.read(1)
                     if ch in ("s", "S"):
                         toggle_view()
+                    elif ch in ("+", "="):
+                        handle_add_slot()
+                    elif ch in ("-", "_"):
+                        handle_remove_slot()
         except Exception:
             pass
         finally:

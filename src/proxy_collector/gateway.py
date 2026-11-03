@@ -600,6 +600,57 @@ class GatewayServer:
                 slot.stats.status = "waiting"
                 slot.stats.upstream = "none (pool warming)"
 
+    async def add_slot(self) -> Optional[ProxySlot]:
+        """Dynamically allocate and start a new proxy slot on the next available port."""
+        used_ports = {s.port for s in self.slots}
+        candidate_port = self.base_port
+        while candidate_port in used_ports:
+            candidate_port += 1
+
+        new_slot_id = len(self.slots)
+        slot = ProxySlot(
+            slot_id=new_slot_id,
+            port=candidate_port,
+            host=self.host,
+            pool=self.pool,
+            target_site=self.target_site,
+            on_swap=lambda s: self._save_status_snapshot(),
+            db=self.db,
+            gateway=self,
+        )
+        candidate = self.pick_available_proxy(exclude_slot_id=new_slot_id)
+        if candidate:
+            slot.assign_proxy(candidate)
+        else:
+            slot.stats.status = "waiting"
+            slot.stats.upstream = "none (pool warming)"
+
+        try:
+            await slot.start()
+        except OSError as err:
+            logger.warning("Could not bind port %d: %s", candidate_port, err)
+            return None
+
+        self.slots.append(slot)
+        self.slots_count = len(self.slots)
+        self._save_status_snapshot()
+        logger.info("Added proxy slot %d on port %d (total: %d)", new_slot_id, candidate_port, len(self.slots))
+        return slot
+
+    async def remove_slot(self) -> Optional[ProxySlot]:
+        """Dynamically stop and remove the highest numbered proxy slot."""
+        if len(self.slots) <= 1:
+            return None
+        slot = self.slots.pop()
+        self.slots_count = len(self.slots)
+        try:
+            await slot.stop()
+        except Exception as err:
+            logger.debug("Error stopping removed slot %d: %s", slot.slot_id, err)
+        self._save_status_snapshot()
+        logger.info("Removed proxy slot %d on port %d (remaining: %d)", slot.slot_id, slot.port, len(self.slots))
+        return slot
+
     def _save_status_snapshot(self):
         """Write live slot status to gateway_status.json."""
         snapshot = {
@@ -608,7 +659,7 @@ class GatewayServer:
             "slots_count": len(self.slots),
             "base_port": self.base_port,
             "target_site": self.target_site,
-            "slots": [asdict(s.stats) for s in self.slots],
+            "slots": [asdict(s.stats) for s in list(self.slots)],
         }
         temp_file = self.status_file.with_suffix(f".tmp.{os.getpid()}")
         try:
@@ -625,7 +676,7 @@ class GatewayServer:
                 self._save_status_snapshot()
 
                 # Check if any slot is unassigned, waiting, or degraded
-                for slot in self.slots:
+                for slot in list(self.slots):
                     if not slot.current_proxy or slot.stats.status in ("waiting", "degraded"):
                         candidate = self.pick_available_proxy(exclude_slot_id=slot.slot_id)
                         if candidate:
@@ -672,8 +723,12 @@ class GatewayServer:
         self._init_slots()
 
         # Start all slot servers
-        for slot in self.slots:
-            await slot.start()
+        for slot in list(self.slots):
+            try:
+                await slot.start()
+            except OSError as exc:
+                logger.warning("Slot %d could not bind port %d: %s", slot.slot_id, slot.port, exc)
+                slot.stats.status = "error"
 
         self._save_status_snapshot()
 
@@ -696,7 +751,7 @@ class GatewayServer:
         self._running = False
         for task in self._bg_tasks:
             task.cancel()
-        for slot in self.slots:
+        for slot in list(self.slots):
             await slot.stop()
         self._save_status_snapshot()
         logger.info("p-rox gateway stopped.")

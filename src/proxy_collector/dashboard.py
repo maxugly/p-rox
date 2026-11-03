@@ -130,7 +130,7 @@ def render_sticky_header(
         cols, _ = shutil.get_terminal_size(fallback=(80, 24))
         width = max(70, min(cols, 120))
 
-    title = " p-rox pool monitor [s: Server View] " if gateway_active else " p-rox pool monitor "
+    title = " p-rox pool monitor [s: Server View | +/-: Slots] " if gateway_active else " p-rox pool monitor "
     bar_len = max(0, width - 2 - len(title))
     top_border = f"┌─{title}{'─' * max(0, bar_len - 1)}┐" if bar_len >= 1 else f"┌{'─' * (width - 2)}┐"
 
@@ -271,18 +271,35 @@ class TerminalDashboard:
         width: Optional[int] = None,
     ) -> str:
         """Render ANSI live dashboard for local gateway slots."""
+        ports = [s.port for s in slots]
+        if ports:
+            min_port, max_port = min(ports), max(ports)
+            if min_port == max_port:
+                port_range_str = str(min_port)
+                urls_str = f"http://{host}:{min_port}"
+            else:
+                port_range_str = f"{min_port}..{max_port}"
+                urls_str = f"http://{host}:{min_port} .. http://{host}:{max_port}"
+            sample_port = min_port
+        else:
+            port_range_str = "None"
+            urls_str = "None"
+            sample_port = 3030
+
         lines = []
         # Clear screen & cursor to home
         lines.append("\033[2J\033[H")
         lines.append(f"\033[1;36m=== p-rox Local Proxy Gateway ({len(slots)} slots on {host}) ===\033[0m")
+        lines.append(f"\033[1;92mConnect To Proxy:\033[0m   \033[1m{urls_str}\033[0m  (Ports: \033[1;93m{port_range_str}\033[0m)")
+        lines.append(f"\033[2mExample Usage:      curl -x http://{host}:{sample_port} https://httpbin.org/ip\033[0m")
         if target_site:
-            lines.append(f"Target Site: \033[1m{target_site}\033[0m")
+            lines.append(f"Target Site:        \033[1m{target_site}\033[0m")
         if pool_stats:
             filtered = {k.title() if isinstance(k, str) else k: v for k, v in pool_stats.items() if k not in ("db_path", "db_size_mb")}
             p_str = " │ ".join(f"{k}: {v:,}" if isinstance(v, int) else f"{k}: {v}" for k, v in filtered.items())
-            lines.append(f"Pool Summary: {p_str}")
+            lines.append(f"Pool Summary:       {p_str}")
 
-        lines.append("\033[2mToggle View: [s] Switch to Pool Monitor  │  [Ctrl+C] Stop\033[0m")
+        lines.append("\033[2mToggle View: [s] Switch to Pool Monitor  │  [+] Add Port  │  [-] Remove Port  │  [Ctrl+C] Stop\033[0m")
         lines.append("")
         header = (
             f"\033[1m{'Slot':<5} {'Port':<7} {'Status':<10} {'Location':<18} "
