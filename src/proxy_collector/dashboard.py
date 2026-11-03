@@ -53,19 +53,24 @@ def format_country_lines(
     total_alive: Optional[int] = None,
     max_lines: int = 10,
 ) -> List[str]:
-    """Format list of (country_code, count) into multiple wrapped box lines with flags and percentages."""
+    """Format list of (country_code, count) into multiple wrapped box lines with flags and percentages.
+
+    Places 'Countries (x):' on its own header line, followed by wrapped country lines.
+    """
+    total_countries = len(countries)
+    header_line = f"Countries ({total_countries}):"
+
     if not countries:
-        return [_box_line("Countries: (Waiting for verified proxies...)", width)]
+        return [
+            _box_line(header_line, width),
+            _box_line("(Waiting for verified proxies...)", width),
+        ]
 
     total_pool = total_alive if (total_alive is not None and total_alive > 0) else sum(c[1] for c in countries)
-    total_countries = len(countries)
-    prefix_first = f"Countries ({total_countries}): "
-    prefix_next = " " * len(prefix_first)
     inner_width = max(20, width - 4)  # space inside │ ... │
 
-    lines: List[str] = []
+    lines: List[str] = [_box_line(header_line, width)]
     current_items: List[str] = []
-    is_first = True
 
     for code, cnt in countries:
         flag = country_code_to_flag(code)
@@ -77,29 +82,23 @@ def format_country_lines(
         else:
             item = f"{flag_str}{code}: {cnt}"
 
-        prefix = prefix_first if is_first else prefix_next
-        test_line = prefix + " │ ".join(current_items + [item])
+        test_line = " │ ".join(current_items + [item])
 
         if visible_len(test_line) <= inner_width:
             current_items.append(item)
         else:
             if current_items:
-                line_str = prefix + " │ ".join(current_items)
-                lines.append(_box_line(line_str, width))
+                lines.append(_box_line(" │ ".join(current_items), width))
                 current_items = [item]
-                is_first = False
             else:
                 lines.append(_box_line(test_line, width))
                 current_items = []
-                is_first = False
 
             if len(lines) >= max_lines:
                 break
 
     if current_items and len(lines) < max_lines:
-        prefix = prefix_first if is_first else prefix_next
-        line_str = prefix + " │ ".join(current_items)
-        lines.append(_box_line(line_str, width))
+        lines.append(_box_line(" │ ".join(current_items), width))
 
     return lines
 

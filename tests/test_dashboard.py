@@ -127,7 +127,7 @@ def test_render_sticky_header_empty():
         width=80,
     )
 
-    assert len(lines) == 6
+    assert len(lines) == 7
     assert lines[0].startswith("┌─ p-rox pool monitor")
     assert lines[-1].startswith("└")
 
@@ -137,7 +137,8 @@ def test_render_sticky_header_empty():
     assert "0 Dead (0 Died)" in plain_lines[2]
     assert "Ping: -" in plain_lines[3]
     assert "Avg Life: -" in plain_lines[3]
-    assert "Waiting for verified proxies" in plain_lines[4]
+    assert "Countries (0):" in plain_lines[4]
+    assert "Waiting for verified proxies" in plain_lines[5]
 
 
 def test_render_sticky_header_populated():
@@ -177,11 +178,13 @@ def test_render_sticky_header_populated():
     assert "Avg Life: 12m 30s" in plain_lines[3]
     assert "Oldest: 48m 12s" in plain_lines[3]
     assert "Elite: 92% (13)" in plain_lines[3]
-    assert "US: 8" in plain_lines[4]
-    assert "DE: 3" in plain_lines[4]
-    assert "🇺🇸" in plain_lines[4]
-    assert "🇩🇪" in plain_lines[4]
-    assert "%" in plain_lines[4]
+    assert "Countries (4):" in plain_lines[4]
+    all_countries_text = " ".join(plain_lines[5:])
+    assert "US: 8" in all_countries_text
+    assert "DE: 3" in all_countries_text
+    assert "🇺🇸" in all_countries_text
+    assert "🇩🇪" in all_countries_text
+    assert "%" in all_countries_text
 
 
 def test_render_sticky_header_multiline_countries():
