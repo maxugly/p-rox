@@ -185,6 +185,15 @@ class ProxyProfiler:
 
         # 1. TCP Handshake Latency
         tcp_ms = self.measure_tcp_handshake(proxy.host, proxy.port, timeout=self.timeout / 2)
+        if tcp_ms == float("inf"):
+            profile.tier = 0
+            profile.last_reason = "Unreachable or timeout"
+            profile.latency = LatencyMetrics(
+                tcp_handshake_ms=float("inf"),
+                http_ttfb_ms=float("inf"),
+                measured_at=time.time(),
+            )
+            return profile
 
         # 2. Anonymity & Egress Detection
         anon_level, egress_ip, leaked_ip = self.determine_anonymity(proxy, timeout=self.timeout)

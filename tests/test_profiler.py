@@ -150,14 +150,15 @@ def test_concurrent_profiling():
 
 
 def test_cmd_profile_cli(tmp_path, capsys):
-    from proxy_collector.cli import cmd_profile
+    from proxy_collector.cli import cmd_test
 
     args = MagicMock()
     args.proxy = "http://1.2.3.4:8080"
     args.cache_dir = str(tmp_path)
+    args.db = str(tmp_path / "test.db")
     args.timeout = 2.0
     args.limit = 1
-    args.concurrency = 1
+    args.workers = 1
 
     mock_profile = MagicMock()
     mock_profile.proxy = Proxy(scheme="http", host="1.2.3.4", port=8080)
@@ -168,13 +169,13 @@ def test_cmd_profile_cli(tmp_path, capsys):
     mock_profile.security.anonymity = "elite"
     mock_profile.security.tls_tampering_detected = False
     mock_profile.tier = 1
-    mock_profile.last_probe_result = "OK"
+    mock_profile.last_reason = "OK"
 
     with patch.object(ProxyProfiler, "profile", return_value=mock_profile):
-        cmd_profile(args)
+        cmd_test(args)
 
     out = capsys.readouterr().out
-    assert "Profiling proxy http://1.2.3.4:8080" in out
+    assert "Testing proxy http://1.2.3.4:8080" in out
     assert "1.2.3.4" in out
 
 

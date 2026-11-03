@@ -2,7 +2,6 @@
 
 import argparse
 import asyncio
-import concurrent.futures
 import json
 import logging
 import os
@@ -10,15 +9,16 @@ import signal
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
-from .collector import ProxyCollector
 from .dashboard import TerminalDashboard
+from .db import DEFAULT_DB_PATH, ProxyDB
+from .gateway import GatewayServer
 from .geoip import GeoIPResolver, download_dbip_lite, download_maxmind_geolite2
 from .models import STANDARD_SCHEMES, Proxy
+from .operations import sync_candidates, test_candidates
 from .parsers import parse_line
-from .pool import ProxyPool
-from .profiler import ProxyProfiler
-from .service import ProxyService
+from .pool import DEFAULT_CACHE_DIR, DEFAULT_PROXY_FILE, ProxyPool
 
 
 def setup_logging(verbose: bool = False):
@@ -30,149 +30,166 @@ def setup_logging(verbose: bool = False):
     )
 
 
-def cmd_fetch(args):
-    """Fetch feeds into cache."""
-    collector = ProxyCollector(
-        cache_dir=args.cache_dir,
-        catalog_path=args.catalog,
-        concurrency=args.concurrency,
-        ttl_seconds=args.ttl,
-    )
-    print(f"Fetching {len(collector.catalog)} feeds into {collector.cache_dir} (concurrency={args.concurrency})...")
-    start = time.monotonic()
+def cmd_sync(args):
+    """Download public feeds and import candidate proxies into SQLite database."""
+    db = ProxyDB(db_path=args.db)
+    print("=" * 70)
+    print("  p-rox sync — Public Feed Ingestion & Candidate Import")
+    print("=" * 70)
 
-    def on_progress(res):
-        status_symbol = {
+    def on_feed(status, name, nbytes, err):
+        sym = {
             "downloaded": "✔ [downloaded]",
             "cached": "★ [cached]    ",
             "failed": "✖ [failed]    ",
-            "skipped": "⊘ [skipped]   ",
-        }.get(res.status, res.status)
-        bytes_str = f"{res.bytes_downloaded / 1024 / 1024:.2f} MB" if res.bytes_downloaded else ""
-        err_str = f"({res.error})" if res.error else ""
-        print(f"  {status_symbol} {res.feed.source_name:20} {res.feed.safe_cached_name:28} {bytes_str} {err_str}")
+        }.get(status, status)
+        b_str = f"{nbytes / 1024 / 1024:.2f} MB" if nbytes else ""
+        err_str = f"({err})" if err else ""
+        print(f"  {sym} {name:20} {b_str:10} {err_str}")
 
-    results = collector.fetch(force=args.force, on_progress=on_progress)
-    duration = time.monotonic() - start
+    def on_import(count):
+        print(f"  ...ingested {count:,} candidates into database...", end="\r", flush=True)
 
-    downloaded = sum(1 for r in results if r.status == "downloaded")
-    cached = sum(1 for r in results if r.status == "cached")
-    failed = sum(1 for r in results if r.status == "failed")
-    total_bytes = sum(r.bytes_downloaded for r in results)
-
-    print("\nFetch Complete:")
-    print(f"  Downloaded: {downloaded} feeds ({total_bytes / 1024 / 1024:.2f} MB)")
-    print(f"  Cached:     {cached} feeds")
-    print(f"  Failed:     {failed} feeds")
-    print(f"  Duration:   {duration:.2f}s")
-
-
-def cmd_collect(args):
-    """Collect, deduplicate, and write proxies to output."""
-    protocols = None
-    if args.web_only:
-        protocols = STANDARD_SCHEMES
-    elif args.protocol:
-        protocols = [p.strip().lower() for p in args.protocol.split(",") if p.strip()]
-
-    collector = ProxyCollector(
-        cache_dir=args.cache_dir,
-        catalog_path=args.catalog,
+    print("Step 1/2: Fetching 52 public proxy feeds...")
+    sources_p = Path(args.sources).resolve() if getattr(args, "sources", None) else None
+    res = sync_candidates(
+        db=db,
+        force=args.force,
+        sources_dir=sources_p,
         concurrency=args.concurrency,
+        on_feed_progress=on_feed,
+        on_import_progress=on_import,
+    )
+    print()
+    print("\nStep 2/2: Candidate import complete.")
+    print("-" * 70)
+    print(f"  Feeds:              {res['feeds_downloaded']} downloaded, {res['feeds_cached']} cached, {res['feeds_failed']} failed")
+    print(f"  Unique Ingested:    {res['newly_added']:,} newly added ({res['total_parsed']:,} parsed)")
+    print(f"  Database Total:     {res['total_in_db']:,} candidates ({res['untested_in_db']:,} untested)")
+    print(f"  Duration:           {res['duration_seconds']}s")
+    print(f"  Database Path:      {db.db_path}")
+    print("-" * 70)
+    print("Next: Run 'p-rox test' to test live candidates, or 'p-rox gateway' to route traffic.")
+
+
+def cmd_test(args):
+    """Test candidate proxies and record latency, egress IP, and health."""
+    db = ProxyDB(db_path=args.db)
+
+    # Single proxy test mode
+    if getattr(args, "proxy", None):
+        p_obj = next(parse_line(args.proxy), None)
+        if not p_obj:
+            print(f"Error: Could not parse proxy string '{args.proxy}'")
+            sys.exit(1)
+        from .profiler import ProxyProfiler
+
+        geoip = GeoIPResolver()
+        profiler = ProxyProfiler(geoip_resolver=geoip, timeout=args.timeout)
+        print(f"Testing proxy {p_obj.url}...")
+        profile = profiler.profile(p_obj)
+        TerminalDashboard.print_profile_card(profile)
+        return
+
+    stats = db.get_stats()
+    if stats["total"] == 0:
+        print("Database is empty. Run 'p-rox sync' first to download and import candidates.")
+        return
+
+    limit = args.limit
+    workers = args.workers
+    timeout = args.timeout
+
+    print("=" * 80)
+    print(f"  p-rox test — Testing {limit} candidates with {workers} workers (timeout={timeout}s)")
+    print("=" * 80)
+
+    def on_result(candidate, is_alive, profile):
+        url = candidate.get("url") or f"{candidate.get('scheme')}://{candidate.get('host')}:{candidate.get('port')}"
+        if is_alive:
+            lat = f"{profile.latency.tcp_handshake_ms:.0f}ms"
+            geo = profile.geo
+            loc = f"{geo.country_code} {geo.city}" if (geo and geo.city) else (geo.country_code if geo else "??")
+            anon = profile.security.anonymity.upper() if profile.security else ""
+            egress = profile.egress_ip or ""
+            print(f"  \033[92m[ALIVE]\033[0m {url:35} {lat:>6}  {loc:16} {anon:7} (Egress: {egress})")
+        else:
+            reason = getattr(profile, "last_reason", "") or "failed"
+            print(f"  \033[91m[DEAD ]\033[0m {url:35} {reason}")
+
+    res = test_candidates(
+        db=db,
+        limit=limit,
+        workers=workers,
+        timeout=timeout,
+        on_result=on_result,
     )
 
-    output_path = Path(args.output).resolve()
-    print(f"Collecting proxies from {collector.cache_dir}...")
-    if args.fetch or args.force:
-        print("Refreshing feeds first...")
-        collector.fetch(force=args.force)
-
-    print(f"Parsing and deduplicating into {output_path}...")
-
-    def progress(count):
-        print(f"  ...processed {count:,} unique proxies")
-
-    stats = collector.collect_to_file(
-        output_path=output_path,
-        protocols=protocols,
-        sort=not args.no_sort,
-        on_progress=progress,
-    )
-
-    print(f"\nCollection Complete in {stats.duration_seconds:.2f}s:")
-    print(f"  Total lines parsed:   {stats.total_lines_parsed:,}")
-    print(f"  Unique entries saved: {stats.unique_entries:,}")
-    print(f"  Duplicates dropped:   {stats.duplicates_dropped:,}")
-    print("\nProtocols breakdown:")
-    for proto, cnt in sorted(stats.by_protocol.items(), key=lambda x: -x[1]):
-        print(f"  {proto:15} {cnt:>10,}")
+    print("-" * 80)
+    print(f"Testing Complete: {res['tested']} tested — \033[92m{res['alive']} ALIVE\033[0m, \033[91m{res['dead']} DEAD\033[0m")
+    print(f"Database Pool:    \033[92m{res['total_alive_in_db']} alive\033[0m, {res['total_untested_in_db']:,} untested remaining")
+    print("-" * 80)
 
 
-def cmd_stats(args):
-    """Show status of cache and feeds."""
-    collector = ProxyCollector(
-        cache_dir=args.cache_dir,
-        catalog_path=args.catalog,
-    )
-    print(f"Catalog contains {len(collector.catalog)} configured feeds.")
-    print(f"Cache directory: {collector.cache_dir}")
+def cmd_status(args):
+    """Query transparent database stats and active gateway status."""
+    db = ProxyDB(db_path=args.db)
+    stats = db.get_stats()
+    alive_sample = db.get_alive_proxies(limit=5)
 
-    total_files = 0
-    total_size = 0
-    if collector.cache_dir.is_dir():
-        for p in collector.cache_dir.iterdir():
-            if p.is_file() and not p.name.startswith("."):
-                total_files += 1
-                total_size += p.stat().st_size
+    print("=" * 70)
+    print("  p-rox — System Status")
+    print("=" * 70)
+    print(f"  Database:           {stats['db_path']} ({stats['db_size_mb']} MB)")
+    print(f"  Total Candidates:   {stats['total']:,}")
+    print(f"  Untested:           {stats['untested']:,}")
+    print(f"  Verified Alive:     \033[92m{stats['alive']:,}\033[0m")
+    print(f"  Dead / Benched:     \033[91m{stats['dead']:,}\033[0m")
 
-    print(f"Cached files: {total_files} ({total_size / 1024 / 1024:.2f} MB)")
+    # Gateway status
+    cache_p = Path(args.cache_dir or DEFAULT_CACHE_DIR).expanduser().resolve()
+    status_file = cache_p / "gateway_status.json"
+    pid_file = cache_p / "gateway.pid"
 
+    is_running = False
+    if pid_file.is_file():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)
+            is_running = True
+        except (ProcessLookupError, ValueError, PermissionError):
+            pid_file.unlink(missing_ok=True)
+            status_file.unlink(missing_ok=True)
 
-def cmd_probe(args):
-    """Execute staged qualification probe across pending candidate proxies."""
-    service = ProxyService(
-        cache=args.cache_dir,
-        site=args.site,
-        route_workers=args.route_workers,
-        site_workers=args.site_workers,
-    )
-    print(f"Executing staged qualification probe (limit={args.limit}, site={args.site or 'none'})...")
-    res = service.check(limit=args.limit)
-    print(json.dumps(res, indent=2))
+    if is_running and status_file.is_file():
+        try:
+            gw_data = json.loads(status_file.read_text(encoding="utf-8"))
+            slots = gw_data.get("slots", [])
+            print("-" * 70)
+            print(f"  Gateway:            \033[92mRUNNING\033[0m on {gw_data.get('host', '127.0.0.1')} ({len(slots)} slots)")
+            for s in slots[:5]:
+                loc = s.get("country") or "unknown"
+                print(f"    Slot {s['slot_id']} (:{s['port']}) -> {s.get('upstream', 'none')} [{s.get('status', 'healthy')}] ({loc})")
+            if len(slots) > 5:
+                print(f"    ... and {len(slots) - 5} more slots")
+        except Exception:
+            pass
+    else:
+        print(f"  Gateway:            STOPPED")
 
+    if alive_sample:
+        print("-" * 70)
+        print("  Fastest Working Proxies:")
+        for p in alive_sample:
+            lat = f"{p['latency_ms']:.0f}ms" if p.get("latency_ms") else "-"
+            loc = p.get("country") or "??"
+            print(f"    {p['url']:35} {lat:>6}  {loc:16} (Egress: {p.get('egress_ip') or 'unknown'})")
 
-def cmd_daemon(args):
-    """Run foreground qualification monitor loop."""
-    service = ProxyService(
-        cache=args.cache_dir,
-        site=args.site,
-        route_workers=args.route_workers,
-        site_workers=args.site_workers,
-    )
-    print(f"Starting p-rox qualification daemon (site={args.site or 'none'})...")
-    service.daemon(interval=args.interval)
-
-
-def cmd_service_status(args):
-    """Query real-time pool metrics and qualification status."""
-    service = ProxyService(cache=args.cache_dir, site=args.site)
-    res = service.status()
-    print(json.dumps(res, indent=2))
-
-
-def cmd_update_pool(args):
-    """Ingest candidate proxies into the service pool."""
-    service = ProxyService(cache=args.cache_dir, site=args.site)
-    res = service.update(limit=args.limit)
-    print(json.dumps(res, indent=2))
+    print("=" * 70)
 
 
 def cmd_gateway(args):
     """Run local forward proxy gateway exposing static ports mapped to hot pool proxies."""
-    import asyncio
-    from .gateway import GatewayServer
-    from .pool import DEFAULT_CACHE_DIR
-
     cache_p = Path(args.cache_dir or DEFAULT_CACHE_DIR).expanduser().resolve()
     cache_p.mkdir(parents=True, exist_ok=True)
     status_file = cache_p / "gateway_status.json"
@@ -256,32 +273,30 @@ def cmd_gateway(args):
         pass
     finally:
         pid_file.unlink(missing_ok=True)
-        loop.close()
+        print("\nGateway stopped.")
 
 
 def cmd_update_geoip(args):
-    """Download and install GeoIP database (DB-IP Lite or MaxMind GeoLite2)."""
-    cache_dir = Path(args.cache_dir) if args.cache_dir else None
+    """Download local binary MMDB databases (DB-IP Lite or MaxMind GeoLite2)."""
+    cache_dir = Path(args.cache_dir or DEFAULT_CACHE_DIR).expanduser().resolve()
+    cache_dir.mkdir(parents=True, exist_ok=True)
     source = args.source.lower().strip()
 
     if source == "dbip":
-        print("Downloading free DB-IP City Lite database (CC-BY-4.0)...")
+        print(f"Downloading free DB-IP City Lite MMDB database into {cache_dir}...")
         try:
-            path = download_dbip_lite(cache_dir=cache_dir)
-            print(f"Successfully installed DB-IP Lite to {path}")
+            path = download_dbip_lite(dest_dir=cache_dir)
+            print(f"Successfully installed DB-IP City Lite to {path}")
         except Exception as e:
             print(f"Error downloading DB-IP Lite: {e}")
             sys.exit(1)
     elif source == "maxmind":
-        key = args.license_key or os.environ.get("MAXMIND_LICENSE_KEY")
-        if not key:
-            print("Error: MaxMind license key is required.")
-            print("Provide it via --license-key <KEY> or export MAXMIND_LICENSE_KEY=<KEY>")
-            print("Free signup: https://www.maxmind.com/en/geolite2/signup")
+        if not args.license_key:
+            print("Error: MaxMind requires an account license key. Provide with --license-key <KEY>.")
             sys.exit(1)
-        print("Downloading MaxMind GeoLite2-City database...")
+        print(f"Downloading MaxMind GeoLite2 database into {cache_dir}...")
         try:
-            path = download_maxmind_geolite2(license_key=key, cache_dir=cache_dir)
+            path = download_maxmind_geolite2(license_key=args.license_key, dest_dir=cache_dir)
             print(f"Successfully installed MaxMind GeoLite2 to {path}")
         except Exception as e:
             print(f"Error downloading MaxMind GeoLite2: {e}")
@@ -291,149 +306,56 @@ def cmd_update_geoip(args):
         sys.exit(1)
 
 
-def cmd_profile(args):
-    """Benchmark and profile proxies (Dual-ping, Egress IP, GeoIP, Anonymity, TLS)."""
-    cache_dir = Path(args.cache_dir) if args.cache_dir else None
-    geoip = GeoIPResolver(cache_dir=cache_dir)
-    profiler = ProxyProfiler(geoip_resolver=geoip, timeout=args.timeout)
-
-    if args.proxy:
-        p_obj = next(parse_line(args.proxy), None)
-        if not p_obj:
-            print(f"Error: Could not parse proxy string '{args.proxy}'")
-            sys.exit(1)
-        print(f"Profiling proxy {p_obj.url}...")
-        profile = profiler.profile(p_obj)
-        TerminalDashboard.print_profile_card(profile)
-        return
-
-    # Profile batch from pool
-    pool = ProxyPool(cache_dir=cache_dir)
-    if not pool.proxies:
-        print("Pool is currently empty. Run 'p-rox update-pool' or 'p-rox collect' first.")
-        return
-
-    limit = min(args.limit, len(pool.proxies))
-    candidates = pool.proxies[:limit]
-    concurrency = max(1, min(getattr(args, "concurrency", 10), limit))
-    print(f"Profiling {limit} candidates from pool with {concurrency} concurrent workers...")
-
-    def _worker(c):
-        p_obj = c if isinstance(c, Proxy) else Proxy(
-            scheme=c.get("scheme", "http"),
-            host=c.get("host", ""),
-            port=int(c.get("port", 0)),
-            username=c.get("user") or None,
-            password=c.get("pass") or None,
-        )
-        return profiler.profile(p_obj)
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
-        futures = {executor.submit(_worker, c): c for c in candidates}
-        for fut in concurrent.futures.as_completed(futures):
-            try:
-                profile = fut.result()
-                pool.apply_profile(profile)
-                TerminalDashboard.print_profile_card(profile)
-            except Exception as e:
-                logging.getLogger("proxy_collector.cli").debug("Worker error: %s", e)
-
-    pool.flush_health()
-    print(f"\nCompleted profiling for {limit} proxies. Health cache flushed to {pool.health_path}.")
-
-
 def main():
-    parser = argparse.ArgumentParser(description="p-rox: High-performance proxy acquisition, qualification, and routing engine")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
+    parser = argparse.ArgumentParser(
+        prog="p-rox",
+        description="p-rox: Fast, transparent public proxy acquisition, testing, and gateway rotation",
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # fetch command
-    p_fetch = subparsers.add_parser("fetch", help="Fetch feeds into cache")
-    p_fetch.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
-    p_fetch.add_argument("--catalog", type=str, default=None, help="Path to lists.json")
-    p_fetch.add_argument("--concurrency", type=int, default=10, help="Concurrent workers")
-    p_fetch.add_argument("--ttl", type=float, default=86400.0, help="Cache TTL in seconds")
-    p_fetch.add_argument("--force", action="store_true", help="Force re-download even if fresh")
-    p_fetch.set_defaults(func=cmd_fetch)
+    # 1. sync (aliases: fetch, update)
+    p_sync = subparsers.add_parser("sync", aliases=["fetch"], help="Download 52 feeds and import candidates into SQLite")
+    p_sync.add_argument("--db", type=str, default=str(DEFAULT_DB_PATH), help="Path to SQLite database")
+    p_sync.add_argument("--sources", type=str, default=None, help="Directory for cached feed files")
+    p_sync.add_argument("--concurrency", type=int, default=10, help="Concurrent workers for feed download")
+    p_sync.add_argument("--force", action="store_true", help="Force re-download even if fresh (<24h)")
+    p_sync.set_defaults(func=cmd_sync)
 
-    # collect command
-    p_collect = subparsers.add_parser("collect", help="Collect, deduplicate and export proxies")
-    p_collect.add_argument("-o", "--output", type=str, default="all_proxies.txt", help="Output file")
-    p_collect.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
-    p_collect.add_argument("--catalog", type=str, default=None, help="Path to lists.json")
-    p_collect.add_argument("--concurrency", type=int, default=10, help="Concurrency for fetch")
-    p_collect.add_argument("--fetch", action="store_true", help="Fetch stale feeds before collecting")
-    p_collect.add_argument("--force", action="store_true", help="Force re-fetch all feeds")
-    p_collect.add_argument("--web-only", action="store_true", help="Only collect standard web proxies (HTTP, HTTPS, SOCKS)")
-    p_collect.add_argument("--protocol", type=str, default=None, help="Comma-separated protocols")
-    p_collect.add_argument("--no-sort", action="store_true", help="Do not sort output (faster for streaming)")
-    p_collect.set_defaults(func=cmd_collect)
+    # 2. test (aliases: check, probe, profile)
+    p_test = subparsers.add_parser("test", aliases=["probe", "profile"], help="Test candidates (latency, egress IP, country, anonymity)")
+    p_test.add_argument("--limit", type=int, default=50, help="Number of candidates to test (default: 50)")
+    p_test.add_argument("--workers", type=int, default=10, help="Concurrent test workers (default: 10)")
+    p_test.add_argument("--timeout", type=float, default=6.0, help="Socket timeout per test (default: 6.0s)")
+    p_test.add_argument("--db", type=str, default=str(DEFAULT_DB_PATH), help="Path to SQLite database")
+    p_test.add_argument("--proxy", type=str, default=None, help="Test a single specific proxy URI")
+    p_test.set_defaults(func=cmd_test)
 
-    # stats command
-    p_stats = subparsers.add_parser("stats", help="Inspect cache and catalog statistics")
-    p_stats.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
-    p_stats.add_argument("--catalog", type=str, default=None, help="Path to lists.json")
-    p_stats.set_defaults(func=cmd_stats)
-
-    # probe command
-    p_probe = subparsers.add_parser("probe", help="Run staged qualification probe across pending proxies")
-    p_probe.add_argument("--limit", type=int, default=200, help="Max candidates to probe")
-    p_probe.add_argument("--site", type=str, default=None, help="Target site for L2 qualification")
-    p_probe.add_argument("--route-workers", type=int, default=8, help="L1 route test workers")
-    p_probe.add_argument("--site-workers", type=int, default=8, help="L2 site test workers")
-    p_probe.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
-    p_probe.set_defaults(func=cmd_probe)
-
-    # daemon command
-    p_daemon = subparsers.add_parser("daemon", help="Run foreground qualification monitor daemon")
-    p_daemon.add_argument("--site", type=str, default=None, help="Target site for L2 qualification")
-    p_daemon.add_argument("--route-workers", type=int, default=8, help="L1 route test workers")
-    p_daemon.add_argument("--site-workers", type=int, default=8, help="L2 site test workers")
-    p_daemon.add_argument("--interval", type=float, default=2.0, help="Status publish interval")
-    p_daemon.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
-    p_daemon.set_defaults(func=cmd_daemon)
-
-    # status command
-    p_status = subparsers.add_parser("status", help="Query pool and service status")
-    p_status.add_argument("--site", type=str, default=None, help="Target site")
-    p_status.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
-    p_status.set_defaults(func=cmd_service_status)
-
-    # update-pool command
-    p_update = subparsers.add_parser("update-pool", help="Ingest proxies into service pool")
-    p_update.add_argument("--limit", type=int, default=10000, help="Max proxies to ingest")
-    p_update.add_argument("--site", type=str, default=None, help="Target site")
-    p_update.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
-    p_update.set_defaults(func=cmd_update_pool)
-
-    # gateway command
-    p_gateway = subparsers.add_parser("gateway", help="Run local forward proxy gateway exposing static slots")
-    p_gateway.add_argument("--slots", type=int, default=10, help="Number of static port slots to maintain (default: 10)")
+    # 3. gateway (aliases: serve)
+    p_gateway = subparsers.add_parser("gateway", aliases=["serve"], help="Run local forward proxy slots (default: 127.0.0.1:3030..3039)")
+    p_gateway.add_argument("--slots", type=int, default=10, help="Number of static port slots (default: 10)")
     p_gateway.add_argument("--base-port", type=int, default=3030, help="Starting port number (default: 3030)")
-    p_gateway.add_argument("--host", type=str, default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1, use 0.0.0.0 for LAN)")
+    p_gateway.add_argument("--host", type=str, default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1)")
     p_gateway.add_argument("--site", type=str, default=None, help="Optional target site for L2 qualification")
-    p_gateway.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
+    p_gateway.add_argument("--cache-dir", type=str, default=None, help="Cache directory for gateway status")
     p_gateway.add_argument("--daemon", action="store_true", help="Run as background daemon process")
     p_gateway.add_argument("--stop", action="store_true", help="Stop running background gateway daemon")
     p_gateway.add_argument("--status", action="store_true", help="Query status of running gateway slots")
     p_gateway.add_argument("--gen-runit", type=str, default=None, help="Generate a Void Linux runit service script at PATH")
     p_gateway.set_defaults(func=cmd_gateway)
 
-    # update-geoip command
-    p_geoip = subparsers.add_parser("update-geoip", help="Download and install GeoIP database (DB-IP Lite or MaxMind)")
+    # 4. status
+    p_status = subparsers.add_parser("status", help="Query transparent database stats and active gateway status")
+    p_status.add_argument("--db", type=str, default=str(DEFAULT_DB_PATH), help="Path to SQLite database")
+    p_status.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
+    p_status.set_defaults(func=cmd_status)
+
+    # 5. update-geoip
+    p_geoip = subparsers.add_parser("update-geoip", help="Download local binary GeoIP database (DB-IP Lite or MaxMind)")
     p_geoip.add_argument("--source", type=str, default="dbip", choices=["dbip", "maxmind"], help="GeoIP source (default: dbip)")
     p_geoip.add_argument("--license-key", type=str, default=None, help="MaxMind account license key (if source is maxmind)")
     p_geoip.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
     p_geoip.set_defaults(func=cmd_update_geoip)
-
-    # profile command
-    p_prof = subparsers.add_parser("profile", help="Benchmark and profile proxy (Dual-Ping, GeoIP, Anonymity, TLS)")
-    p_prof.add_argument("--proxy", type=str, default=None, help="Single proxy URI to profile (e.g. http://1.2.3.4:8080)")
-    p_prof.add_argument("--limit", type=int, default=10, help="Number of pool candidates to profile (default: 10)")
-    p_prof.add_argument("--concurrency", type=int, default=10, help="Number of concurrent profiling workers (default: 10)")
-    p_prof.add_argument("--timeout", type=float, default=6.0, help="Socket timeout per test (default: 6.0s)")
-    p_prof.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
-    p_prof.set_defaults(func=cmd_profile)
 
     args = parser.parse_args()
     setup_logging(args.verbose)

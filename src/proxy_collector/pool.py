@@ -56,6 +56,8 @@ class ProxyPool:
         path: Optional[str | Path] = DEFAULT_PROXY_FILE,
         cache_dir: Optional[str | Path] = None,
         refresh: bool = False,
+        load_db: bool = False,
+        db_path: Optional[str | Path] = None,
     ):
         self.lock = threading.RLock()
         self.proxies: List[Proxy] = []
@@ -98,6 +100,35 @@ class ProxyPool:
                         self.ingest([line])
             except Exception as exc:
                 logger.warning("Error reading pool manifest: %s", exc)
+
+        # Tier 3: Load verified alive proxies from SQLite database if requested
+        if load_db or db_path:
+            try:
+                from .db import ProxyDB
+                db = ProxyDB(db_path=db_path)
+                alive_records = db.get_alive_proxies(limit=200)
+                for r in alive_records:
+                    self._add(
+                        scheme=r["scheme"],
+                        host=r["host"],
+                        port=r["port"],
+                        user=r.get("username") or "",
+                        pw=r.get("password") or "",
+                        tier="free",
+                        country=r.get("country") or "",
+                    )
+                    k = self._key(r["scheme"], r["host"], r["port"], r.get("username") or "")
+                    if k not in self.health:
+                        self.health[k] = {
+                            "egress": r.get("egress_ip") or "",
+                            "latency": {
+                                "tcp_handshake_ms": r.get("latency_ms"),
+                                "http_ttfb_ms": r.get("ttfb_ms"),
+                            },
+                            "security": {"anonymity": r.get("anonymity") or "unknown"},
+                        }
+            except Exception as exc:
+                logger.debug("Could not load from SQLite db: %s", exc)
 
     def _init_leases(self):
         from .leases import ProxyLeases

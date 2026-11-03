@@ -26,3 +26,6 @@ all_proxies.txt
 sources/
 *.tmp
 *.tmp.*
+*.db
+*.db-wal
+*.db-shm

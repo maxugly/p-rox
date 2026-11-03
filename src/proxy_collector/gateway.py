@@ -119,6 +119,12 @@ class ProxySlot:
             old_p = self.current_proxy
             if old_p:
                 self.pool.fail(old_p, reason=reason)
+                try:
+                    from .db import ProxyDB
+                    url = ProxyPool.requests_url(old_p)
+                    ProxyDB().mark_proxy_failed(url)
+                except Exception:
+                    pass
 
             # Pick next candidate from pool
             new_p = self.pool.pick(site=self.target_site)
@@ -503,7 +509,7 @@ class GatewayServer:
         self.host = host
         self.cache_dir = Path(cache_dir or DEFAULT_CACHE_DIR).expanduser().resolve()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.pool = pool or ProxyPool(cache_dir=self.cache_dir)
+        self.pool = pool or ProxyPool(cache_dir=self.cache_dir, load_db=True)
         self.target_site = target_site
 
         self.status_file = self.cache_dir / "gateway_status.json"
