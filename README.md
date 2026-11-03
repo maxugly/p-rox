@@ -39,6 +39,64 @@ flowchart TD
 
 ---
 
+## Why P Rox:
+
+Public proxy scraping is notoriously painful:
+- **90% of proxies are dead on arrival** before you even send your first HTTP request.
+- **8% die mid-scrape**, hanging connections and crashing workers.
+- **1.5% are "transparent" honeypots** that leak your real home IP address in `X-Forwarded-For`.
+- **Rogue nodes intercept SSL certificates**, trying to decrypt or tamper with your HTTPS requests.
+- **Hundreds of different entry IPs share the exact same exit node**, so hitting a website with 20 threads gets your entire batch banned by Cloudflare in 1 second.
+
+`p-rox` was built from the ground up to solve all of this:
+
+* 🚀 **2.2 Million Candidate Ingestion in 18 Seconds**: Ingests, normalizes, and deduplicates 52 upstream public feeds without blowing up system RAM.
+* 🛡️ **Auto-Healing Local Gateway (`127.0.0.1:3030..3039`)**: You don't have to rewrite your scraper code or deal with rotation logic. Point your browser, curl, or scraper to a fixed local port (`localhost:3030`), and `p-rox` automatically tests, warms, and hot-swaps proxies behind the scenes without ever dropping the listener!
+* 🔒 **Egress-Identity Mutual Exclusion**: Proxies are tracked by their *true remote exit IP* (`ip_echo`). Two workers will never hit the same target domain through the same physical egress IP at the same time.
+* ⚡ **Microsecond Offline GeoIP**: Look up Country, City, Region, ASN, and Residential vs. Datacenter classification in 2 microseconds using local binary MMDB files (DB-IP Lite or MaxMind GeoLite2).
+* ⏱️ **Dual-Ping Benchmarks**: Separates raw socket connection latency (SYN-ACK) from HTTP Time-To-First-Byte (TTFB) so you always know where bottlenecks lie.
+* 🧯 **Exponential Circuit Breakers**: Benches flaky proxies for 2 minutes, rate-limited proxies for 10 minutes, auth blocks for 1 hour, and dead proxies for 7 days.
+* 🌐 **Universal Portability**: Zero Docker containers or systemd dependencies. Runs as a clean foreground CLI, interactive dashboard, or background daemon across Linux, macOS, BSD, and Windows, with optional `runit` generation for lightweight servers.
+
+---
+
+## Quickstart for Beginners (Zero to Hero in 60 Seconds)
+
+You don't need a degree in networking to use `p-rox`. Follow these 3 commands:
+
+### 1. Install `p-rox`
+```bash
+git clone https://github.com/maxugly/p-rox.git
+cd p-rox
+pip install -e ".[socks]"
+```
+
+### 2. Download Free GeoIP Data (1 command, no account needed)
+```bash
+p-rox update-geoip --source dbip
+```
+
+### 3. Launch the Forward Proxy Gateway
+```bash
+p-rox gateway --slots 10
+```
+
+**That's it!** You now have 10 live, static proxy ports running on `127.0.0.1:3030` through `127.0.0.1:3039`.
+
+Open a second terminal window and test your new IPs:
+```bash
+# Slot 0
+curl -x http://127.0.0.1:3030 https://ifconfig.me
+
+# Slot 1
+curl -x http://127.0.0.1:3031 https://ifconfig.me
+```
+
+> [!TIP]
+> **Why static ports are awesome**: If the upstream proxy dies, `p-rox` instantly swaps in a new healthy proxy in the background. Your scraper just keeps hitting `http://127.0.0.1:3030` without caring!
+
+---
+
 ## Part 1: Acquisition, Normalization & Deduplication
 
 Public proxy lists are notoriously noisy: mixed schemes, dead links, inconsistent formats, duplicate entries across aggregators, and malformed HTML tags. `p-rox` ingests, standardizes, and deduplicates this firehose in seconds.
@@ -182,106 +240,254 @@ The architecture implements standard distributed systems design patterns:
 
 ---
 
-## Part 6: Installation & Usage
+## Part 6: Installation, Recipes & CLI Reference
 
 ### Installation
 
 ```bash
-# In your virtual environment
-pip install -e .
-
-# With PySocks for SOCKS4/SOCKS5 support
+# Clone and install in your virtualenv
+git clone https://github.com/maxugly/p-rox.git
+cd p-rox
 pip install -e ".[socks]"
 ```
 
-### CLI Reference
+Both `p-rox` and `proxy-collector` binary commands can be used interchangeably.
 
-Both `p-rox` and `proxy-collector` can be used interchangeably:
+---
 
-#### 1. Inspect Cache and Feed Catalog
-```bash
-p-rox stats
-```
+### Plug-and-Play Recipes (How to Actually Use It)
 
-#### 2. Fetch and Update Upstream Feeds
-```bash
-# Uses cached feeds if fresh (<24h TTL)
-p-rox fetch
+Once you run `p-rox gateway --slots 10`, you have 10 forward proxy ports active on `127.0.0.1:3030` through `3039`. Here is how you connect your favorite tools:
 
-# Force re-download all 52 feeds in parallel
-p-rox fetch --force --concurrency 12
-```
-
-#### 3. Collect, Deduplicate, and Filter Proxies
-```bash
-# Collect and deduplicate all proxies (web + tunnels)
-p-rox collect -o all_proxies.txt
-
-# Collect only standard web proxies (HTTP, HTTPS, SOCKS4, SOCKS5)
-p-rox collect -o web_proxies.txt --web-only
-
-# Filter specific protocols
-p-rox collect -o socks_proxies.txt --protocol socks4,socks5
-
-# Refresh feeds from the internet before collecting
-p-rox collect -o all_proxies.txt --fetch
-```
-
-#### 4. Stage Qualification & Health Probing
-```bash
-# Run batch probe across candidate proxies
-p-rox probe --limit 200 --site https://example.com/
-
-# Query real-time qualification and pool status
-p-rox status --site example.com
-
-# Start continuous foreground background qualification daemon
-p-rox daemon --site https://example.com/ --route-workers 8 --site-workers 8
-```
-
-#### 5. Local Forward Proxy Gateway (Static Port Slots)
-Exposes fixed local ports mapped to pre-qualified, auto-healing upstream proxies:
-
-```bash
-# 1. Interactive mode with live dashboard (slots on ports 3030..3039)
-p-rox gateway --slots 10
-
-# 2. Bind to 0.0.0.0 for access across home LAN / server
-p-rox gateway --host 0.0.0.0 --slots 10 --base-port 3030
-
-# 3. Background daemon mode
-p-rox gateway --slots 10 --daemon
-p-rox gateway --status      # View live slot status
-p-rox gateway --stop        # Stop background daemon
-
-# 4. Void Linux runit service generation
-sudo p-rox gateway --gen-runit /etc/sv/p-rox/run
-sudo ln -s /etc/sv/p-rox /var/service/
-```
-
-Use from **any tool or language** without SDK code changes:
+#### Recipe 1: Terminal & `curl`
 ```bash
 # Slot 0
 curl -x http://127.0.0.1:3030 https://ifconfig.me
+
 # Slot 1
 curl -x http://127.0.0.1:3031 https://ifconfig.me
 ```
 
-#### 6. Offline GeoIP Management & Deep Profiling
-Enrich proxies with offline MMDB location data, dual-ping latency, anonymity tiering, and TLS tampering checks:
+#### Recipe 2: Python `requests`
+```python
+import requests
+
+# Slot 0
+proxies = {
+    "http": "http://127.0.0.1:3030",
+    "https": "http://127.0.0.1:3030",
+}
+resp = requests.get("https://httpbin.org/ip", proxies=proxies, timeout=10)
+print("My Proxy IP:", resp.json()["origin"])
+```
+
+#### Recipe 3: Web Scraping with Playwright
+```python
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    # Route the entire browser through Slot 0
+    browser = p.chromium.launch(
+        proxy={"server": "http://127.0.0.1:3030"}
+    )
+    page = browser.new_page()
+    page.goto("https://ifconfig.me")
+    print("Page Title:", page.title())
+    browser.close()
+```
+
+#### Recipe 4: Desktop Web Browser (Firefox / Chrome)
+1. In **Firefox**: Settings &rarr; Network Settings &rarr; Manual Proxy Configuration.
+2. Set **HTTP Proxy** to `127.0.0.1`, Port `3030`. Check *"Also use this proxy for HTTPS"*.
+3. Click OK. Now all your browser traffic routes through Slot 0. If that proxy drops, `p-rox` swaps it silently while you browse!
+
+#### Recipe 5: Running 24/7 on a Home Server or Laptop
+```bash
+# 1. Start in background
+p-rox gateway --host 0.0.0.0 --slots 10 --daemon
+
+# 2. Check live health anytime
+p-rox gateway --status
+
+# 3. Stop background process
+p-rox gateway --stop
+```
+
+For **Void Linux** (or systems using `runit`):
+```bash
+# Automatically write an executable runit service script
+sudo p-rox gateway --gen-runit /etc/sv/p-rox/run
+sudo ln -s /etc/sv/p-rox /var/service/
+```
+
+---
+
+### Complete CLI Flag & Subcommand Reference
+
+#### 1. `p-rox gateway` — Local Forward Proxy Gateway
+Exposes fixed local ports mapped to auto-healing upstream proxies:
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--slots` | int | `10` | Number of static local port slots to maintain (e.g. 10 allocates ports 3030..3039). |
+| `--base-port` | int | `3030` | Starting port number for the slot allocation. |
+| `--host` | string | `127.0.0.1` | Local network interface to bind (`127.0.0.1` for local, `0.0.0.0` for LAN access). |
+| `--site` | string | `None` | Optional target website for L2 qualification (e.g. `https://example.com/`). |
+| `--daemon` | flag | `False` | Run server as a detached background daemon process. |
+| `--status` | flag | `False` | Query status JSON of running background slots. |
+| `--stop` | flag | `False` | Send SIGTERM to running background gateway daemon. |
+| `--gen-runit` | path | `None` | Generate an executable Void Linux runit service script at PATH. |
+| `--cache-dir` | path | `~/.cache/p-rox` | Directory storing health data and status snapshots. |
+
+```bash
+# Interactive mode with live terminal dashboard (slots on ports 3030..3039)
+p-rox gateway --slots 10
+
+# Bind to LAN for home server
+p-rox gateway --host 0.0.0.0 --slots 10 --base-port 3030
+
+# Background daemon mode
+p-rox gateway --slots 10 --daemon
+p-rox gateway --status
+p-rox gateway --stop
+```
+
+---
+
+#### 2. `p-rox profile` — Dual-Ping & Deep Telemetry Benchmarking
+Benchmark proxies for TCP connect time, HTTP TTFB, anonymity tiering, and TLS tampering:
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--proxy` | string | `None` | Single proxy URL to test (e.g. `http://1.2.3.4:8080`). |
+| `--limit` | int | `10` | Number of pool candidates to benchmark. |
+| `--concurrency` | int | `10` | Parallel worker threads for concurrent testing. |
+| `--timeout` | float | `6.0` | Socket timeout in seconds per test phase. |
+| `--cache-dir` | path | `~/.cache/p-rox` | Directory storing GeoIP databases and health cache. |
+
+```bash
+# Benchmark a single proxy
+p-rox profile --proxy http://185.220.101.4:9050
+
+# Benchmark 50 proxies concurrently with 10 worker threads
+p-rox profile --limit 50 --concurrency 10
+```
+
+---
+
+#### 3. `p-rox update-geoip` — Offline GeoIP Management
+Downloads and updates offline binary `.mmdb` databases for microsecond lookups:
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--source` | string | `dbip` | Database source: `dbip` (free, no account) or `maxmind`. |
+| `--license-key`| string | `None` | MaxMind account license key (required if `--source maxmind`). |
+| `--cache-dir` | path | `~/.cache/p-rox` | Directory to save downloaded `.mmdb` file. |
 
 ```bash
 # 1. Download free DB-IP City Lite database (zero signup required, CC-BY-4.0)
 p-rox update-geoip --source dbip
 
-# 2. Or download MaxMind GeoLite2 using a free account license key
-p-rox update-geoip --source maxmind --license-key <YOUR_LICENSE_KEY>
+# 2. Download MaxMind GeoLite2 using your account license key
+p-rox update-geoip --source maxmind --license-key <YOUR_KEY>
+```
 
-# 3. Benchmark and profile a single proxy
-p-rox profile --proxy http://185.220.101.4:9050
+---
 
-# 4. Benchmark candidates concurrently from the pool and save enriched telemetry
-p-rox profile --limit 50 --concurrency 10
+#### 4. `p-rox collect` — Acquire, Deduplicate & Export Proxies
+Streaming canonical deduplication of 2.2M+ candidates into clean text:
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `-o, --output` | path | `all_proxies.txt` | Target output file for deduplicated proxies. |
+| `--web-only` | flag | `False` | Filter to standard web protocols only (HTTP, HTTPS, SOCKS4, SOCKS5). |
+| `--protocol` | string | `None` | Comma-separated protocols to include (e.g. `socks5,https`). |
+| `--no-sort` | flag | `False` | Stream lines immediately without sorting (faster on huge files). |
+| `--fetch` | flag | `False` | Fetch stale feeds from the internet before deduplicating. |
+| `--force` | flag | `False` | Force re-download all 52 feeds even if cache is fresh. |
+| `--concurrency`| int | `10` | Concurrent download threads for fetching. |
+| `--cache-dir` | path | `~/.cache/p-rox` | Cache directory. |
+
+```bash
+# Export all 2.2M deduplicated proxies (web + tunnels)
+p-rox collect -o all_proxies.txt
+
+# Export only SOCKS5 and HTTPS proxies
+p-rox collect -o fast_proxies.txt --protocol socks5,https
+
+# Refresh feeds from internet before collecting
+p-rox collect -o all_proxies.txt --fetch
+```
+
+---
+
+#### 5. `p-rox fetch` — Parallel Feed Downloader
+Fetches 52 upstream proxy feeds with atomic swapping:
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--concurrency`| int | `10` | Concurrent worker threads downloading feeds. |
+| `--ttl` | float | `86400.0` | Cache time-to-live in seconds (default: 24 hours). |
+| `--force` | flag | `False` | Bypass TTL and force redownloading all feeds. |
+| `--catalog` | path | `None` | Optional custom `lists.json` feed catalog path. |
+| `--cache-dir` | path | `~/.cache/p-rox` | Directory for raw cached feed files. |
+
+```bash
+# Uses cached feeds if fresh (<24h TTL)
+p-rox fetch
+
+# Force re-download all 52 feeds in parallel with 12 workers
+p-rox fetch --force --concurrency 12
+```
+
+---
+
+#### 6. `p-rox probe` — Staged Qualification Prober
+Runs batch qualification testing across pending pool candidates:
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--limit` | int | `200` | Maximum number of candidates to test. |
+| `--site` | string | `None` | Target site for L2 qualification (e.g. `https://example.com/`). |
+| `--route-workers`| int | `8` | Worker threads for Layer 1 route echo tests. |
+| `--site-workers` | int | `8` | Worker threads for Layer 2 target site tests. |
+| `--cache-dir` | path | `~/.cache/p-rox` | Cache directory. |
+
+```bash
+# Run batch probe across 200 proxies
+p-rox probe --limit 200 --site https://example.com/
+```
+
+---
+
+#### 7. `p-rox daemon` — Background Monitoring Service
+Starts continuous foreground daemon continuously testing and qualifying proxies:
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--site` | string | `None` | Target site for L2 qualification. |
+| `--route-workers`| int | `8` | L1 route testing threads. |
+| `--site-workers` | int | `8` | L2 site testing threads. |
+| `--interval` | float | `2.0` | Status publish interval in seconds. |
+| `--cache-dir` | path | `~/.cache/p-rox` | Cache directory. |
+
+```bash
+p-rox daemon --site https://example.com/ --route-workers 8 --site-workers 8
+```
+
+---
+
+#### 8. `p-rox status` & `p-rox stats` — Status & Inspection
+Queries live pool health or inspects cache statistics:
+
+| Command | Flags | Description |
+|---|---|---|
+| `p-rox status` | `--site <URL>`, `--cache-dir <DIR>` | Prints real-time qualification tiers and circuit breaker status. |
+| `p-rox stats` | `--catalog <PATH>`, `--cache-dir <DIR>` | Displays feed catalog metrics and local cache file ages. |
+
+```bash
+p-rox status --site example.com
+p-rox stats
 ```
 
 ---
