@@ -50,6 +50,32 @@ def test_pool_circuit_breaker_quarantine(tmp_path):
     assert pool.health[key].get("dead") is True
 
 
+def test_pool_typed_proxy_instances(tmp_path):
+    from proxy_collector.models import Proxy
+
+    pool = ProxyPool(path=None, cache_dir=tmp_path)
+    pool._add("http", "1.2.3.4", "8080", user="alice", pw="secret")
+    p = pool.proxies[0]
+
+    # Verify it is an actual Proxy dataclass
+    assert isinstance(p, Proxy)
+    assert p.host == "1.2.3.4"
+    assert p.port == 8080
+    assert p.username == "alice"
+    assert p.requests_url == "http://alice:secret@1.2.3.4:8080"
+
+    # Verify dict-subscript compatibility
+    assert p["host"] == "1.2.3.4"
+    assert p["user"] == "alice"
+    assert p["pass"] == "secret"
+    assert "user" in p
+    assert p.get("nonexistent", "default") == "default"
+
+    # Verify dict equality
+    legacy_dict = {"scheme": "http", "host": "1.2.3.4", "port": "8080", "user": "alice", "pass": "secret"}
+    assert p == legacy_dict
+
+
 def test_pool_ranking_and_pick(tmp_path):
     pool = ProxyPool(path=None, cache_dir=tmp_path)
     pool._add("http", "1.1.1.1", "80")  # Untested: tier 2

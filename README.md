@@ -280,8 +280,8 @@ p-rox update-geoip --source maxmind --license-key <YOUR_LICENSE_KEY>
 # 3. Benchmark and profile a single proxy
 p-rox profile --proxy http://185.220.101.4:9050
 
-# 4. Benchmark candidates from the pool and save enriched telemetry
-p-rox profile --limit 20
+# 4. Benchmark candidates concurrently from the pool and save enriched telemetry
+p-rox profile --limit 50 --concurrency 10
 ```
 
 ---
@@ -452,7 +452,7 @@ Run the offline regression test suite (mocked networking, zero outbound calls):
 pytest -v
 ```
 
-All 58 test units run in `<0.5s` covering concurrent feed downloads, multi-format stream parsing, canonical deduplication, staged pool progression, identity leasing, circuit breaker quarantine, local gateway transparent tunneling, dual-ping latency, anonymity tiering, and GeoIP resolution.
+All 60 test units run in `<1s` covering concurrent feed downloads, multi-format stream parsing, canonical deduplication, staged pool progression, identity leasing, circuit breaker quarantine, local gateway transparent tunneling, dual-ping latency, anonymity tiering, and GeoIP resolution.
 
 ---
 

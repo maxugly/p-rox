@@ -123,3 +123,28 @@ def test_check_tls_integrity_mitm():
         tampered, msg = profiler.check_tls_integrity(p)
         assert tampered is True
         assert "Self-signed" in msg
+
+
+def test_concurrent_profiling():
+    import concurrent.futures
+
+    profiler = ProxyProfiler()
+    proxies = [Proxy(scheme="http", host=f"10.0.0.{i}", port=8080) for i in range(5)]
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"content-type": "application/json"}
+    mock_resp.json.return_value = {"origin": "185.220.101.4", "headers": {}}
+
+    with patch("requests.get", return_value=mock_resp), patch.object(
+        ProxyProfiler, "measure_tcp_handshake", return_value=12.5
+    ):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            profiles = list(executor.map(profiler.profile, proxies))
+
+    assert len(profiles) == 5
+    for prof in profiles:
+        assert prof.egress_ip == "185.220.101.4"
+        assert prof.latency.tcp_handshake_ms == 12.5
+        assert prof.security.anonymity == "elite"
+

@@ -1,6 +1,9 @@
 """Proxy control service providing CLI and API coordination, status snapshots, and daemon mode."""
 
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import json
 import logging
 import os
@@ -52,10 +55,11 @@ class ProxyService:
     def writer(self):
         """Exclusive file lock ensuring only one coordinator process mutates state at a time."""
         with open(self.lock_file, "a") as lock_fh:
-            try:
-                fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise RuntimeError("Proxy service is busy; stop any running daemon before manual update/check.")
+            if fcntl is not None:
+                try:
+                    fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise RuntimeError("Proxy service is busy; stop any running daemon before manual update/check.")
             yield
 
     def _monitor(self, refresh: bool = False) -> ProxyMonitor:

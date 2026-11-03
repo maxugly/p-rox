@@ -1,6 +1,7 @@
 """Command-line interface for p-rox / proxy-collector."""
 
 import argparse
+import concurrent.futures
 import json
 import logging
 import sys
@@ -311,19 +312,28 @@ def cmd_profile(args):
 
     limit = min(args.limit, len(pool.proxies))
     candidates = pool.proxies[:limit]
-    print(f"Profiling {limit} candidates from pool with GeoIP and Dual-Ping metrics...")
+    concurrency = max(1, min(getattr(args, "concurrency", 10), limit))
+    print(f"Profiling {limit} candidates from pool with {concurrency} concurrent workers...")
 
-    for i, c in enumerate(candidates, 1):
-        p_obj = Proxy(
+    def _worker(c):
+        p_obj = c if isinstance(c, Proxy) else Proxy(
             scheme=c.get("scheme", "http"),
             host=c.get("host", ""),
             port=int(c.get("port", 0)),
             username=c.get("user") or None,
             password=c.get("pass") or None,
         )
-        profile = profiler.profile(p_obj)
-        pool.apply_profile(profile)
-        TerminalDashboard.print_profile_card(profile)
+        return profiler.profile(p_obj)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = {executor.submit(_worker, c): c for c in candidates}
+        for fut in concurrent.futures.as_completed(futures):
+            try:
+                profile = fut.result()
+                pool.apply_profile(profile)
+                TerminalDashboard.print_profile_card(profile)
+            except Exception as e:
+                logging.getLogger("proxy_collector.cli").debug("Worker error: %s", e)
 
     pool.flush_health()
     print(f"\nCompleted profiling for {limit} proxies. Health cache flushed to {pool.health_path}.")
@@ -417,6 +427,7 @@ def main():
     p_prof = subparsers.add_parser("profile", help="Benchmark and profile proxy (Dual-Ping, GeoIP, Anonymity, TLS)")
     p_prof.add_argument("--proxy", type=str, default=None, help="Single proxy URI to profile (e.g. http://1.2.3.4:8080)")
     p_prof.add_argument("--limit", type=int, default=10, help="Number of pool candidates to profile (default: 10)")
+    p_prof.add_argument("--concurrency", type=int, default=10, help="Number of concurrent profiling workers (default: 10)")
     p_prof.add_argument("--timeout", type=float, default=6.0, help="Socket timeout per test (default: 6.0s)")
     p_prof.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
     p_prof.set_defaults(func=cmd_profile)

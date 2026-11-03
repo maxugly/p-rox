@@ -58,7 +58,7 @@ class ProxyPool:
         refresh: bool = False,
     ):
         self.lock = threading.RLock()
-        self.proxies: List[Dict[str, Any]] = []
+        self.proxies: List[Proxy] = []
         self._proxy_keys: Set[str] = set()
 
         self.cache_dir = Path(cache_dir or DEFAULT_CACHE_DIR).expanduser().resolve()
@@ -111,8 +111,10 @@ class ProxyPool:
         return f"{scheme.lower()}://{auth}{host.lower()}:{port}"
 
     @classmethod
-    def _proxy_key(cls, p: Dict[str, Any]) -> str:
-        """Canonical key from a proxy dict."""
+    def _proxy_key(cls, p: Any) -> str:
+        """Canonical key from a Proxy object or legacy proxy dict."""
+        if hasattr(p, "dedup_key"):
+            return p.dedup_key
         return cls._key(p.get("scheme", "http"), p.get("host", ""), p.get("port", ""), p.get("user", ""))
 
     def _load_premium_file(self, path: Path):
@@ -180,21 +182,21 @@ class ProxyPool:
                     self.health.pop(key, None)
                     h = {}
 
-            p = {
-                "scheme": scheme,
-                "host": host,
-                "port": port,
-                "user": user or "",
-                "pass": pw or "",
-                "tier": tier,
-                "fails": 0,
-                "consec": h.get("consec", 0),
-                "benched_until": h.get("benched_until", 0.0),
-                "label": f":{port}",
-                "last_reason": "",
-                "country": country or h.get("country", ""),
-                "extra": extra or {},
-            }
+            p = Proxy(
+                scheme=scheme,
+                host=host,
+                port=int(port),
+                username=user or None,
+                password=pw or None,
+                tier=tier,
+                fails=0,
+                consec=h.get("consec", 0),
+                benched_until=h.get("benched_until", 0.0),
+                label=f":{port}",
+                last_reason="",
+                country=country or h.get("country", ""),
+                extra=extra or {},
+            )
             self.proxies.append(p)
             self._proxy_keys.add(key)
             if self.leases is not None:
@@ -432,17 +434,20 @@ class ProxyPool:
                     p["consec"] = 0
                 break
 
-    def get_profile(self, p: Dict[str, Any]) -> ProxyProfile:
-        """Construct a structured ProxyProfile from a pool proxy dictionary."""
-        proxy_obj = Proxy(
-            scheme=p.get("scheme", "http"),
-            host=p.get("host", ""),
-            port=int(p.get("port", 0)),
-            username=p.get("user") or None,
-            password=p.get("pass") or None,
-            country=p.get("country") or None,
-        )
-        key = self._key(proxy_obj.scheme, proxy_obj.host, proxy_obj.port, proxy_obj.username)
+    def get_profile(self, p: Any) -> ProxyProfile:
+        """Construct a structured ProxyProfile from a Proxy instance or pool dict."""
+        if isinstance(p, Proxy):
+            proxy_obj = p
+        else:
+            proxy_obj = Proxy(
+                scheme=p.get("scheme", "http"),
+                host=p.get("host", ""),
+                port=int(p.get("port", 0)),
+                username=p.get("user") or None,
+                password=p.get("pass") or None,
+                country=p.get("country") or None,
+            )
+        key = proxy_obj.dedup_key
         with self.lock:
             h = self.health.get(key, {})
             geo = GeoLocation.from_dict(h.get("geo")) if h.get("geo") else None

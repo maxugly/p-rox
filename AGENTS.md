@@ -50,11 +50,11 @@ When implementing features, refactoring, or writing tests, all AI agents **must 
 - **NEVER** use, default to, or recommend congested ports such as `8000`, `8080`, or `8001`.
 - Any new slot-based services must respect the `--base-port` option and default to `3030`.
 
-### 2. Deployment OS & Init System: Void Linux (`runit`)
-- The user's continuous server runs **Void Linux**, which uses `runit` as its init system.
-- **NEVER** write `systemd` service units or assume `systemctl` is available.
-- Services must run as foreground processes or fork-based daemons with standard signal handling (`SIGTERM`/`SIGINT`).
-- Runit service generation is built-in: `p-rox gateway --gen-runit /etc/sv/p-rox/run`. Runit template scripts live in [`scripts/runit/p-rox/run`](scripts/runit/p-rox/run).
+### 2. Universal Portability & Process Model
+- `p-rox` is built to be universally portable and self-contained across Linux, macOS, BSD, and Windows without requiring external daemon managers or container overhead.
+- Services run cleanly as foreground processes or fork-based daemons with standard signal handling (`SIGTERM`/`SIGINT`).
+- For users running lightweight init systems (such as Void Linux `runit`), first-class service generation is built-in: `p-rox gateway --gen-runit /etc/sv/p-rox/run`. Runit template scripts live in [`scripts/runit/p-rox/run`](scripts/runit/p-rox/run).
+- Never hardcode dependencies on `systemd` units or assume `systemctl` is available. Built for the user to be awesome anywhere.
 
 ### 3. Isolated, Offline Unit Tests
 - Tests in [`tests/`](tests/) **must never make outbound network requests** to public proxy feeds, echo endpoints, or websites.
@@ -104,7 +104,7 @@ p-rox/
 │   ├── routing.py              # Leased RoutedSession (requests.Session subclass)
 │   ├── service.py              # Coordination layer with fcntl.flock concurrency locks
 │   └── sources.py              # Catalog of 52 verified feeds across 9 providers
-├── tests/                      # Fast offline test suite (58 tests, <0.5s)
+├── tests/                      # Fast offline test suite (60 tests, <1s)
 ├── AGENTS.md                   # This file (Agent briefing & architectural rules)
 ├── pyproject.toml              # Package configuration & entry points
 └── README.md                   # Technical reference manual & documentation

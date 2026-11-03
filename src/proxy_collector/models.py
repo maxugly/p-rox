@@ -28,6 +28,14 @@ class Proxy:
     source: Optional[str] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
+    # Operational pool state
+    tier: str = "free"
+    fails: int = 0
+    consec: int = 0
+    benched_until: float = 0.0
+    label: str = ""
+    last_reason: str = ""
+
     def __post_init__(self):
         self.scheme = self.scheme.lower().strip()
         self.host = self.host.lower().strip()
@@ -36,6 +44,46 @@ class Proxy:
             self.username = self.username.strip()
         if self.password:
             self.password = self.password.strip()
+        if not self.label:
+            self.label = f":{self.port}"
+
+    def __getitem__(self, key: str) -> Any:
+        if key == "user":
+            return self.username or ""
+        elif key == "pass":
+            return self.password or ""
+        elif key == "port":
+            return str(self.port)
+        elif hasattr(self, key):
+            val = getattr(self, key)
+            return val if val is not None else ""
+        elif key in self.extra:
+            return self.extra[key]
+        raise KeyError(key)
+
+    def __setitem__(self, key: str, value: Any):
+        if key == "user":
+            self.username = str(value) if value else None
+        elif key == "pass":
+            self.password = str(value) if value else None
+        elif key == "port":
+            self.port = int(value)
+        elif hasattr(self, key):
+            setattr(self, key, value)
+        else:
+            self.extra[key] = value
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            val = self[key]
+            return val if val != "" else default if default is not None else ""
+        except KeyError:
+            return default
+
+    def __contains__(self, key: str) -> bool:
+        if key in ("user", "pass"):
+            return True
+        return hasattr(self, key) or key in self.extra
 
     @property
     def is_tunnel(self) -> bool:
@@ -90,20 +138,20 @@ class Proxy:
             d["password"] = self.password
         return d
 
-    def as_pool_dict(self, tier: str = "free") -> Dict[str, Any]:
-        """Convert to dict matching loadDowner ProxyPool internal format."""
+    def as_pool_dict(self, tier: Optional[str] = None) -> Dict[str, Any]:
+        """Convert to dict matching ProxyPool internal format."""
         return {
             "scheme": self.scheme,
             "host": self.host,
             "port": str(self.port),
             "user": self.username or "",
             "pass": self.password or "",
-            "tier": tier,
-            "fails": 0,
-            "consec": 0,
-            "benched_until": 0.0,
-            "label": f":{self.port}",
-            "last_reason": "",
+            "tier": tier or self.tier,
+            "fails": self.fails,
+            "consec": self.consec,
+            "benched_until": self.benched_until,
+            "label": self.label or f":{self.port}",
+            "last_reason": self.last_reason,
             "country": self.country or "",
             "extra": self.extra,
         }
@@ -126,9 +174,18 @@ class Proxy:
         return hash(self.dedup_key)
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Proxy):
-            return False
-        return self.dedup_key == other.dedup_key
+        if isinstance(other, Proxy):
+            return self.dedup_key == other.dedup_key
+        elif isinstance(other, dict):
+            s = other.get("scheme", "").lower()
+            h = other.get("host", "").lower()
+            port = str(other.get("port", ""))
+            u = other.get("user", "")
+            p = other.get("pass", "")
+            auth = f"{u}:{p}@" if u or p else ""
+            key = f"{s}://{auth}{h}:{port}".lower()
+            return self.dedup_key == key
+        return False
 
 
 @dataclass
