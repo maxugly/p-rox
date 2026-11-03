@@ -23,6 +23,9 @@ from .pool import DEFAULT_CACHE_DIR, DEFAULT_PROXY_FILE, ProxyPool
 
 
 def setup_logging(verbose: bool = False):
+    import urllib3
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,

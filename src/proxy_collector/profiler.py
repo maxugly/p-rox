@@ -8,6 +8,9 @@ from typing import Any, Dict, Optional, Tuple
 import urllib.parse
 
 import requests
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from .geoip import GeoIPResolver
 from .models import GeoLocation, LatencyMetrics, Proxy, ProxyProfile, SecurityMetrics
