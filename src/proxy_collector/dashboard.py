@@ -82,13 +82,13 @@ def format_country_lines(
         else:
             item = f"{flag_str}{code}: {cnt}"
 
-        test_line = " │ ".join(current_items + [item])
+        test_line = "  ".join(current_items + [item])
 
         if visible_len(test_line) <= inner_width:
             current_items.append(item)
         else:
             if current_items:
-                lines.append(_box_line(" │ ".join(current_items), width))
+                lines.append(_box_line("  ".join(current_items), width))
                 current_items = [item]
             else:
                 lines.append(_box_line(test_line, width))
@@ -98,7 +98,7 @@ def format_country_lines(
                 break
 
     if current_items and len(lines) < max_lines:
-        lines.append(_box_line(" │ ".join(current_items), width))
+        lines.append(_box_line("  ".join(current_items), width))
 
     return lines
 

@@ -185,6 +185,10 @@ def test_render_sticky_header_populated():
     assert "🇺🇸" in all_countries_text
     assert "🇩🇪" in all_countries_text
     assert "%" in all_countries_text
+    # Verify no '|' or '│' between countries
+    for l in plain_lines[5:-1]:
+        inner = l.strip()[1:-1].strip()
+        assert "│" not in inner and "|" not in inner
 
 
 def test_render_sticky_header_multiline_countries():
