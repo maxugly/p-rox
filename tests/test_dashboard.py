@@ -137,6 +137,14 @@ def test_format_helpers():
     assert format_rate(1024) == "1.0KB/s"
     assert format_rate(0) == "0B/s"
 
+    from proxy_collector.dashboard import format_compact_num
+    assert format_compact_num(240000) == ".24M"
+    assert format_compact_num(1000000) == "1M"
+    assert format_compact_num(1500000) == "1.50M"
+    assert format_compact_num(45000) == "45k"
+    assert format_compact_num(42) == "42"
+    assert format_compact_num(0) == "0"
+
     assert format_uptime(45) == "00:00:45"
     assert format_uptime(125) == "00:02:05"
     assert format_uptime(3665) == "01:01:05"
@@ -339,5 +347,37 @@ def test_render_sticky_header_geoip_resolving():
     assert "GeoIP Resolving: 1,500 mapped" in all_text
     assert "500 to lookup ↓" in all_text
     assert "75%" in all_text
+
+
+def test_render_country_menu():
+    from proxy_collector.dashboard import TerminalDashboard, country_code_to_flag
+
+    sample_items = [
+        {"index": 1, "code": "US", "flag": country_code_to_flag("US"), "alive": 14, "total": 240000, "tier": 1},
+        {"index": 2, "code": "DE", "flag": country_code_to_flag("DE"), "alive": 8, "total": 45000, "tier": 1},
+        {"index": 3, "code": "CL", "flag": country_code_to_flag("CL"), "alive": 0, "total": 42, "tier": 2},
+        {"index": 4, "code": "AQ", "flag": country_code_to_flag("AQ"), "alive": 0, "total": 0, "tier": 3},
+    ]
+
+    out = TerminalDashboard.render_country_menu(
+        slot_num=1,
+        port=3030,
+        current_filter="US",
+        items=sample_items,
+        cursor_index=0,
+        search_query="",
+        term_width=80,
+        term_height=15,
+    )
+
+    assert "Slot 1 (Port 3030) Country Selection" in out
+    assert "Current: US" in out
+    assert "ANY: All Countries (Clear Filter)" in out
+    assert "US:14/.24M" in out
+    assert "DE:8/45k" in out
+    assert "CL:0/42" in out
+    assert "AQ:0/0" in out
+    assert "Nav: [↑/↓/←/→] Move" in out
+
 
 

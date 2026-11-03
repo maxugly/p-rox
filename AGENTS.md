@@ -97,6 +97,17 @@ Do not bypass or modify the exponential circuit breaker quarantine discipline in
 - Both continuous test workers and forward gateway slots respect the `--country` / `-c` filter (e.g. `p-rox --serve -c US`).
 - GeoIP calculation can be explicitly disabled across all subcommands with `--no-geoip` / `--skip-geoip`.
 
+### 10. Dedicated Slot Country Menus (`1`–`0`) & Prioritized Conveyor Testing
+- In `VIEW_SERVER`, pressing `1` through `0` directly opens the country selection overlay for that specific slot (e.g. `1` for Slot 1, `0` for Slot 10).
+- Option `0`: Clear / ANY country filter (`[0] 🌐 ANY: All Countries`).
+- Full-screen multi-column grid (`VIEW_SLOT_MENU`) categorizes all 249 ISO countries into 3 distinct visual tiers:
+  - **Tier 1 (Bold Green)**: Tested & alive > 0 (`<flag> CC:alive/total`).
+  - **Tier 2 (Warning Yellow Background)**: Represented in DB candidates, but 0 alive.
+  - **Tier 3 (Dimmed Grey)**: 0 candidates in database.
+- Navigation supports arrow keys (`↑`, `↓`, `←`, `→`), number typing (e.g. `14`), country code letter filtering (e.g. `US`), `Backspace`, `Enter` to select, and `Esc`/`q` to cancel.
+- When locked to a country, the slot immediately drops its current proxy. If no alive proxy is ready, it enters `waiting` (orange `\033[38;5;208m`, `warming (XX)`).
+- The continuous testing conveyor belt prioritizes testing up to 10 candidates for waiting countries before resuming general round-robin testing.
+
 ---
 
 ## 4. Codebase Directory Map
@@ -125,7 +136,7 @@ p-rox/
 │   ├── routing.py              # Leased RoutedSession (requests.Session subclass)
 │   ├── service.py              # Coordination layer with fcntl.flock concurrency locks
 │   └── sources.py              # Catalog of 52 verified feeds across 9 providers
-├── tests/                      # Fast offline test suite (92 tests, <1s)
+├── tests/                      # Fast offline test suite (96 tests, <1s)
 ├── AGENTS.md                   # This file (Agent briefing & architectural rules)
 ├── pyproject.toml              # Package configuration & entry points
 └── README.md                   # Technical reference manual & documentation

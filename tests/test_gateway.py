@@ -372,5 +372,49 @@ def test_slot_stats_rates_and_traffic():
     assert stats.bytes_received == 4096
 
 
+def test_slot_country_filter_and_waiting_countries(tmp_path):
+    from proxy_collector.db import ProxyDB
+    from proxy_collector.models import Proxy
+
+    db = ProxyDB(db_path=tmp_path / "gw_slot_country.db")
+    p_us = Proxy(scheme="http", host="1.1.1.1", port=8080)
+    p_de = Proxy(scheme="http", host="2.2.2.2", port=8080)
+    db.upsert_batch([p_us, p_de], resolve_geoip=False)
+
+    # US is verified alive, DE is untested
+    db.record_test_result(url=p_us.url, is_alive=True, latency_ms=45.0, country="US (Ashburn)")
+
+    server = GatewayServer(
+        slots_count=2,
+        base_port=3030,
+        db=db,
+        cache_dir=tmp_path,
+    )
+    server._init_slots()
+
+    # Slot 0 locks to US -> gets p_us
+    ok_us = server.slots[0].set_country_filter("US")
+    assert ok_us is True
+    assert server.slots[0].stats.status == "healthy"
+    assert server.slots[0].stats.upstream == p_us.url
+    assert server.slots[0].country_filter == "US"
+
+    # Slot 1 locks to DE -> no alive DE exists -> enters waiting
+    ok_de = server.slots[1].set_country_filter("DE")
+    assert ok_de is False
+    assert server.slots[1].stats.status == "waiting"
+    assert server.slots[1].stats.upstream == "warming (DE)"
+    assert server.slots[1].country_filter == "DE"
+
+    # Waiting countries check
+    assert server.get_waiting_countries() == ["DE"]
+
+    # Clear filter on slot 1 -> set to None
+    server.slots[1].set_country_filter(None)
+    assert server.slots[1].country_filter is None
+    assert server.get_waiting_countries() == []
+
+
+
 
 

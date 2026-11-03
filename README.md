@@ -143,6 +143,7 @@ Options:
 
 #### Real-Time Interactive Controls & Hotkeys
 While running with `--serve`, single keystrokes control the engine instantly without interrupting background workers:
+- **`1` - `0`**: Opens the dedicated **Country Selection Menu** for slots 1 through 10.
 - **`s`**: Toggles between the **Pool Monitor View** (sticky header with scrolling test output) and the **Gateway Server View** (live slot matrix).
 - **`+` / `=`**: Dynamically scales up the gateway by adding a new proxy slot and binding the next sequential port (e.g. opens `3040`).
 - **`-` / `_`**: Dynamically scales down the gateway by stopping and removing the highest numbered slot (minimum 1 slot maintained).
@@ -156,22 +157,50 @@ GitHub: https://github.com/maxugly/p-rox
 Connect To Proxy:   http://127.0.0.1:3030 .. http://127.0.0.1:3039  (Ports: 3030..3039)
 Example Usage:      curl -x http://127.0.0.1:3030 https://httpbin.org/ip
 Pool Summary:       Total: 2,050,404 │ Alive: 711 │ Untested: 2,044,451
-Toggle View: [s] Switch to Pool Monitor  │  [+] Add Port  │  [-] Remove Port  │  [Ctrl+C] Stop
+Slot Menu: [1-0]  │  Toggle View: [s]  │  [+] Add Port  │  [-] Remove Port  │  [Ctrl+C] Stop
 
 Slot  Port   Status    Location         Alive       Speed (▲/▼)        Traffic (▲/▼)      Conns    Ping (TCP/TTFB)  Upstream
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-0     3030   healthy   🇸🇬 SG            2h 16m 42s  14.2KB/s / 48.6KB/s 1.2MB / 4.8MB     2 (14)   242ms / 9677ms   https://23.106.249.54:6550
-1     3031   healthy   🇧🇩 BD            1h 36m 15s  0B/s / 0B/s        120KB / 450KB      0 (3)    305ms TCP        http://115.127.31.66:8080
-2     3032   healthy   🇨🇳 CN (Beijing)  34m 31s     2.1KB/s / 18.4KB/s 45KB / 320KB       1 (5)    229ms / 8139ms   socks5://47.92.219.102:8085
-3     3033   healthy   🇨🇳 CN            2h 16m 42s  0B/s / 0B/s        85KB / 512KB       0 (8)    266ms / 3510ms   https://117.82.138.100:1080
-4     3034   healthy   🇺🇸 US (Seattle)  2h 02m 09s  5.4KB/s / 62.1KB/s 520KB / 3.4MB      1 (22)   162ms / 3423ms   https://45.150.164.23:8443
-5     3035   healthy   🇱🇹 LT            2h 13m 50s  0B/s / 0B/s        12KB / 88KB        0 (2)    172ms / 3342ms   https://89.124.8.83:443
-6     3036   healthy   🇩🇪 DE (Frankfurt 2h 02m 09s  0B/s / 0B/s        210KB / 1.1MB      0 (9)    243ms / 2583ms   https://64.31.39.228:443
-7     3037   healthy   🇱🇻 LV (Riga)     2h 16m 42s  1.0KB/s / 12.0KB/s 64KB / 480KB       1 (7)    140ms / 1962ms   https://89.111.28.78:443
-8     3038   healthy   🇭🇰 HK (Hong Kong 59m 24s     0B/s / 0B/s        0B / 0B            0 (0)    268ms TCP        socks5://165.154.20.187:108…
-9     3039   healthy   🇺🇸 US (Seattle)  2h 02m 09s  0B/s / 0B/s        180KB / 950KB      0 (11)   185ms / 2509ms   https://45.150.164.14:8443
+1     3030   healthy   🇸🇬 SG            2h 16m 42s  14.2KB/s / 48.6KB/s 1.2MB / 4.8MB     2 (14)   242ms / 9677ms   https://23.106.249.54:6550
+2     3031   healthy   🇧🇩 BD            1h 36m 15s  0B/s / 0B/s        120KB / 450KB      0 (3)    305ms TCP        http://115.127.31.66:8080
+3     3032   healthy   🇨🇳 CN (Beijing)  34m 31s     2.1KB/s / 18.4KB/s 45KB / 320KB       1 (5)    229ms / 8139ms   socks5://47.92.219.102:8085
+4     3033   healthy   🇨🇳 CN            2h 16m 42s  0B/s / 0B/s        85KB / 512KB       0 (8)    266ms / 3510ms   https://117.82.138.100:1080
+5     3034   healthy   🇺🇸 US (Seattle)  2h 02m 09s  5.4KB/s / 62.1KB/s 520KB / 3.4MB      1 (22)   162ms / 3423ms   https://45.150.164.23:8443
+6     3035   healthy   🇱🇹 LT            2h 13m 50s  0B/s / 0B/s        12KB / 88KB        0 (2)    172ms / 3342ms   https://89.124.8.83:443
+7     3036   healthy   🇩🇪 DE (Frankfurt 2h 02m 09s  0B/s / 0B/s        210KB / 1.1MB      0 (9)    243ms / 2583ms   https://64.31.39.228:443
+8     3037   healthy   🇱🇻 LV (Riga)     2h 16m 42s  1.0KB/s / 12.0KB/s 64KB / 480KB       1 (7)    140ms / 1962ms   https://89.111.28.78:443
+9     3038   healthy   🇭🇰 HK (Hong Kong 59m 24s     0B/s / 0B/s        0B / 0B            0 (0)    268ms TCP        socks5://165.154.20.187:108…
+10    3039   healthy   🇺🇸 US (Seattle)  2h 02m 09s  0B/s / 0B/s        180KB / 950KB      0 (11)   185ms / 2509ms   https://45.150.164.14:8443
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Hotkeys: [s] toggle monitor/server │ [+] add proxy slot │ [-] remove proxy slot │ Ctrl+C stop
+Hotkeys: [1-0] slot country menu │ [s] toggle monitor/server │ [+] add proxy slot │ [-] remove proxy slot │ Ctrl+C stop
+```
+
+#### Dedicated Slot Country Selection Menu (`1`–`0`)
+Pressing `1` through `0` opens an interactive, full-screen tiered country selector for that slot:
+```text
+=== Slot 1 (Port 3030) Country Selection ===  [Current: US]
+Select a country to lock this slot. Testing conveyor prioritizes live proxies for selected country.
+[  0] 🌐 ANY: All Countries (Clear Filter)   │   Filter: [US                            ]   │   Matches: 1
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[  1] 🇺🇸 US:14/.24M [  2] 🇩🇪 DE:8/45k   [  3] 🇸🇬 SG:5/12k   [  4] 🇨🇱 CL:0/42    [  5] 🇰🇷 KR:0/380   
+[  6] 🇦🇶 AQ:0/0     [  7] 🇦🇮 AI:0/0     [  8] 🇦🇼 AW:0/0     ...
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Nav: [↑/↓/←/→] Move  │  [Enter] Select  │  [0] Clear Filter  │  [Backspace] Edit  │  [Esc/q] Cancel
+```
+
+- **Visual Tiering**:
+  - **Tier 1 (Bold Green)**: Tested & alive > 0 proxies.
+  - **Tier 2 (Warning Yellow Background)**: Represented in DB candidates, but 0 alive.
+  - **Tier 3 (Dimmed Grey)**: 0 candidates in database.
+- **Controls**:
+  - `↑` / `↓` / `←` / `→`: Navigates cursor through the multi-column full-screen grid.
+  - Type letters (`US`, `DE`) or digits (`14`): Instant real-time search filtering.
+  - `Enter`: Confirms selection and locks the slot to that country.
+  - `0`: Clears filter / unpins slot (`ANY`).
+  - `Esc` / `q`: Dismisses menu without changes.
+- **Prioritized Conveyor Testing**:
+  - When locked to a country with 0 alive proxies, the slot drops current proxy and enters `waiting` (orange, `warming (XX)`).
+  - The continuous testing loop prioritizes testing candidates for that country (up to 10 candidates per batch) until a working proxy is verified and immediately assigned.
 ```
 
 #### Routing Requests Through Gateway Slots
@@ -279,7 +308,7 @@ The test suite runs completely offline without making outbound network requests:
 pytest -v
 ```
 
-All 92 tests execute in under 1 second.
+All 96 tests execute in under 1 second.
 
 ---
 

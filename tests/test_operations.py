@@ -295,4 +295,50 @@ def test_cmd_sync_with_geoip_intake(tmp_path, capsys):
     assert "GeoIP Coverage:" in out
 
 
+def test_run_continuous_worker_priority_country(tmp_path):
+    import threading
+    db = ProxyDB(db_path=tmp_path / "pri_worker.db")
+    p_de = Proxy(scheme="http", host="10.0.0.1", port=8080)
+    p_us = Proxy(scheme="http", host="10.0.0.2", port=8080)
+    db.upsert_batch([p_de, p_us], resolve_geoip=False)
+
+    with db.get_connection() as conn:
+        conn.execute("UPDATE proxies SET country = 'DE (Frankfurt)' WHERE url = ?", (p_de.url,))
+        conn.execute("UPDATE proxies SET country = 'US (Ashburn)' WHERE url = ?", (p_us.url,))
+
+    stop_event = threading.Event()
+    results = []
+
+    profile_alive = ProxyProfile(
+        proxy=p_us,
+        egress_ip="10.0.0.2",
+        latency=LatencyMetrics(tcp_handshake_ms=25.0, http_ttfb_ms=100.0),
+        security=SecurityMetrics(anonymity="elite"),
+        tier=1,
+    )
+
+    def on_result(candidate, is_alive, profile):
+        results.append(candidate["url"])
+        stop_event.set()
+
+    with patch("proxy_collector.operations.ProxyProfiler") as mock_prof_cls:
+        mock_prof = MagicMock()
+        mock_prof.profile.return_value = profile_alive
+        mock_prof_cls.return_value = mock_prof
+
+        ops.run_continuous_worker(
+            db=db,
+            workers=1,
+            batch_size=2,
+            priority_countries_fn=lambda: ["US"],
+            stop_event=stop_event,
+            on_result=on_result,
+        )
+
+    assert len(results) >= 1
+    # US proxy was prioritized and tested first even though DE had a lower row ID
+    assert results[0] == p_us.url
+
+
+
 

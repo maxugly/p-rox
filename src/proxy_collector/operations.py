@@ -198,6 +198,7 @@ def run_continuous_worker(
     timeout: float = 6.0,
     batch_size: int = 50,
     country: Optional[str] = None,
+    priority_countries_fn: Optional[Callable[[], List[str]]] = None,
     stop_event: Optional[Any] = None,
     on_result: Optional[Callable[[Dict[str, Any], bool, Any], None]] = None,
     on_tick: Optional[Callable[[Dict[str, Any], float], None]] = None,
@@ -272,12 +273,34 @@ def run_continuous_worker(
             if task_queue.qsize() < num_workers:
                 needed = q_capacity - task_queue.qsize()
                 if needed > 0:
-                    candidates = db.get_candidates_for_testing(
-                        limit=needed + len(in_flight),
-                        keepalive_seconds=keepalive,
-                        include_all_alive=first_feed,
-                        country=country,
-                    )
+                    waiting_countries = priority_countries_fn() if priority_countries_fn else []
+                    candidates = []
+                    if waiting_countries:
+                        # Prioritize candidates from waiting countries (up to 10 candidates per batch)
+                        for wc in waiting_countries:
+                            pri_cands = db.get_candidates_for_testing(
+                                limit=min(10, needed + len(in_flight)),
+                                keepalive_seconds=keepalive,
+                                include_all_alive=first_feed,
+                                country=wc,
+                            )
+                            candidates.extend(pri_cands)
+                            if len(candidates) >= needed:
+                                break
+
+                    if len(candidates) < needed:
+                        remaining_needed = needed - len(candidates)
+                        general = db.get_candidates_for_testing(
+                            limit=remaining_needed + len(in_flight),
+                            keepalive_seconds=keepalive,
+                            include_all_alive=first_feed,
+                            country=country,
+                        )
+                        seen_urls = {c.get("url") for c in candidates}
+                        for g in general:
+                            if g.get("url") not in seen_urls:
+                                candidates.append(g)
+
                     first_feed = False
                     with in_flight_lock:
                         for c in candidates:

@@ -276,4 +276,44 @@ def test_proxydb_country_filtering(tmp_path):
     assert len(alive_all) == 2
 
 
+def test_proxydb_country_menu_items(tmp_path):
+    db = ProxyDB(db_path=tmp_path / "menu_items.db")
+    p_us = Proxy(scheme="http", host="1.1.1.1", port=8080)
+    p_de = Proxy(scheme="http", host="2.2.2.2", port=8080)
+    db.upsert_batch([p_us, p_de], resolve_geoip=False)
+
+    with db.get_connection() as conn:
+        conn.execute("UPDATE proxies SET country = 'US (Ashburn)' WHERE url = ?", (p_us.url,))
+        conn.execute("UPDATE proxies SET country = 'DE (Frankfurt)' WHERE url = ?", (p_de.url,))
+
+    # Only US is alive, DE is untested
+    db.record_test_result(url=p_us.url, is_alive=True, latency_ms=45.0, country="US (Ashburn)")
+
+    items = db.get_country_menu_items()
+    assert len(items) >= 240  # covers full ISO country set
+
+    # Tier 1: US must be first
+    assert items[0]["code"] == "US"
+    assert items[0]["tier"] == 1
+    assert items[0]["alive"] == 1
+    assert items[0]["total"] == 1
+    assert items[0]["index"] == 1
+
+    # Tier 2: DE must be represented in Tier 2
+    tier2_items = [it for it in items if it["tier"] == 2]
+    de_item = next((it for it in tier2_items if it["code"] == "DE"), None)
+    assert de_item is not None
+    assert de_item["alive"] == 0
+    assert de_item["total"] == 1
+
+    # Tier 3: Zero candidate countries
+    tier3_items = [it for it in items if it["tier"] == 3]
+    assert len(tier3_items) > 0
+    aq_item = next((it for it in tier3_items if it["code"] == "AQ"), None)
+    assert aq_item is not None
+    assert aq_item["alive"] == 0
+    assert aq_item["total"] == 0
+
+
+
 

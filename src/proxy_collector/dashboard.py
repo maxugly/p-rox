@@ -54,6 +54,45 @@ def format_uptime(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{sec:02d}"
 
 
+def format_compact_num(num: int) -> str:
+    """Format large numbers into compact strings (.24M, 45k, 42, 0)."""
+    n = int(max(0, num))
+    if n >= 100_000:
+        val = f"{n / 1_000_000:.2f}"
+        if val.startswith("0."):
+            val = val[1:]
+        elif val.endswith(".00"):
+            val = val[:-3]
+        return f"{val}M"
+    elif n >= 1_000:
+        val = f"{n / 1_000:.1f}"
+        if val.endswith(".0"):
+            val = val[:-2]
+        return f"{val}k"
+    else:
+        return str(n)
+
+
+ISO_COUNTRY_CODES: Tuple[str, ...] = (
+    "AD", "AE", "AF", "AG", "AI", "AL", "AM", "AO", "AQ", "AR", "AS", "AT", "AU", "AW", "AX", "AZ",
+    "BA", "BB", "BD", "BE", "BF", "BG", "BH", "BI", "BJ", "BL", "BM", "BN", "BO", "BQ", "BR", "BS",
+    "BT", "BV", "BW", "BY", "BZ", "CA", "CC", "CD", "CF", "CG", "CH", "CI", "CK", "CL", "CM", "CN",
+    "CO", "CR", "CU", "CV", "CW", "CX", "CY", "CZ", "DE", "DJ", "DK", "DM", "DO", "DZ", "EC", "EE",
+    "EG", "EH", "ER", "ES", "ET", "FI", "FJ", "FK", "FM", "FO", "FR", "GA", "GB", "GD", "GE", "GF",
+    "GG", "GH", "GI", "GL", "GM", "GN", "GP", "GQ", "GR", "GS", "GT", "GU", "GW", "GY", "HK", "HM",
+    "HN", "HR", "HT", "HU", "ID", "IE", "IL", "IM", "IN", "IO", "IQ", "IR", "IS", "IT", "JE", "JM",
+    "JO", "JP", "KE", "KG", "KH", "KI", "KM", "KN", "KP", "KR", "KW", "KY", "KZ", "LA", "LB", "LC",
+    "LI", "LK", "LR", "LS", "LT", "LU", "LV", "LY", "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK",
+    "ML", "MM", "MN", "MO", "MP", "MQ", "MR", "MS", "MT", "MU", "MV", "MW", "MX", "MY", "MZ", "NA",
+    "NC", "NE", "NF", "NG", "NI", "NL", "NO", "NP", "NR", "NU", "NZ", "OM", "PA", "PE", "PF", "PG",
+    "PH", "PK", "PL", "PM", "PN", "PR", "PS", "PT", "PW", "PY", "QA", "RE", "RO", "RS", "RU", "RW",
+    "SA", "SB", "SC", "SD", "SE", "SG", "SH", "SI", "SJ", "SK", "SL", "SM", "SN", "SO", "SR", "SS",
+    "ST", "SV", "SX", "SY", "SZ", "TC", "TD", "TF", "TG", "TH", "TJ", "TK", "TL", "TM", "TN", "TO",
+    "TR", "TT", "TV", "TW", "TZ", "UA", "UG", "UM", "US", "UY", "UZ", "VA", "VC", "VE", "VG", "VI",
+    "VN", "VU", "WF", "WS", "YE", "YT", "ZA", "ZM", "ZW"
+)
+
+
 def country_code_to_flag(code: Optional[str]) -> str:
     """Convert a 2-letter ISO country code into Unicode flag emoji.
 
@@ -296,6 +335,7 @@ class TerminalDashboard:
     format_uptime = staticmethod(format_uptime)
     format_bytes = staticmethod(format_bytes)
     format_rate = staticmethod(format_rate)
+    format_compact_num = staticmethod(format_compact_num)
 
     @staticmethod
     def render_gateway_dashboard(
@@ -354,7 +394,7 @@ class TerminalDashboard:
             elif total > 0:
                 lines.append(f"GeoIP Coverage:     \033[92m100% mapped\033[0m ({resolved:,} candidates)")
 
-        lines.append("\033[2mToggle View: [s] Switch to Pool Monitor  │  [+] Add Port  │  [-] Remove Port  │  [Ctrl+C] Stop\033[0m")
+        lines.append("\033[2mSlot Menu: [1-0]  │  Toggle View: [s]  │  [+] Add Port  │  [-] Remove Port  │  [Ctrl+C] Stop\033[0m")
         lines.append("")
         header = (
             f"\033[1m{'Slot':<5} {'Port':<6} {'Status':<9} {'Location':<16} "
@@ -375,15 +415,23 @@ class TerminalDashboard:
             if stats.status == "healthy":
                 status_color = "\033[32m"
             elif stats.status == "waiting":
-                status_color = "\033[33m"
+                status_color = "\033[38;5;208m"
             else:
                 status_color = "\033[31m"
             status_str = f"{status_color}{stats.status:<9}\033[0m"
 
             raw_loc = stats.country or "N/A"
-            code = raw_loc.split()[0].upper()[:2] if raw_loc and raw_loc != "N/A" else ""
+            c_filter_val = getattr(s, "country_filter", None) or getattr(stats, "country_filter", None)
+            c_filter = c_filter_val if isinstance(c_filter_val, str) and c_filter_val else None
+            code = raw_loc.split()[0].upper()[:2] if raw_loc and raw_loc != "N/A" else (c_filter or "")
             flag = country_code_to_flag(code)
-            loc = f"{flag} {raw_loc}" if flag else raw_loc
+            if c_filter and stats.status == "waiting":
+                loc = f"[{c_filter}] {flag} (waiting)" if flag else f"[{c_filter}] waiting"
+            elif c_filter:
+                loc = f"[{c_filter}] {flag} {raw_loc}" if flag else f"[{c_filter}] {raw_loc}"
+            else:
+                loc = f"{flag} {raw_loc}" if flag else raw_loc
+
             vlen = visible_len(loc)
             if vlen < 16:
                 loc_padded = loc + " " * (16 - vlen)
@@ -428,14 +476,88 @@ class TerminalDashboard:
             if len(upstream) > 28:
                 upstream = upstream[:27] + "…"
 
+            slot_disp = str(s.slot_id + 1)
             line = (
-                f"{s.slot_id:<5} {s.port:<6} {status_str} {loc_padded} "
+                f"{slot_disp:<5} {s.port:<6} {status_str} {loc_padded} "
                 f"{alive_str:<11} {speed_str:<18} {traffic_str:<18} {conns_str:<8} {ping_str:<16} {upstream}"
             )
             lines.append(line)
 
         lines.append("─" * sep_len)
-        lines.append("\033[2mPress 's' to toggle monitor / server view. Press Ctrl+C to stop.\033[0m\n")
+        lines.append("\033[2mSelect Slot: [1-0]  │  Toggle: [s]  │  [+] Add Port  │  [-] Remove Port  │  [Ctrl+C] Stop\033[0m\n")
+        return "\n".join(lines)
+
+    @staticmethod
+    def render_country_menu(
+        slot_num: int,
+        port: int,
+        current_filter: Optional[str],
+        items: List[Dict[str, Any]],
+        cursor_index: int = 0,
+        search_query: str = "",
+        term_width: int = 100,
+        term_height: int = 30,
+    ) -> str:
+        """Render full-screen country selection grid for slot configuration."""
+        lines = []
+        cur_disp = current_filter or "ANY (All Countries)"
+        lines.append(f"\033[1;36m=== Slot {slot_num} (Port {port}) Country Selection ===\033[0m  \033[2m[Current: {cur_disp}]\033[0m")
+        lines.append("\033[2mSelect a country to lock this slot. Testing conveyor prioritizes live proxies for selected country.\033[0m")
+
+        q_disp = f"[{search_query}]" if search_query else "[Type country code or number]"
+        is_any_cur = (cursor_index == -1)
+        any_style = "\033[1;37;44m" if is_any_cur else "\033[1;33m"
+        line3 = (
+            f"{any_style}[  0] 🌐 ANY: All Countries (Clear Filter)\033[0m"
+            f"   │   Filter: \033[1;97m{q_disp}\033[0m"
+            f"   │   Matches: \033[1;32m{len(items)}\033[0m"
+        )
+        lines.append(line3)
+        sep_len = max(80, min(term_width, 140))
+        lines.append("─" * sep_len)
+
+        cell_width = 20
+        cols = max(1, min(sep_len // cell_width, 8))
+        actual_cell_width = sep_len // cols
+
+        max_grid_rows = max(4, term_height - 6)
+        total_rows = (len(items) + cols - 1) // cols if items else 0
+
+        cursor_row = cursor_index // cols if (items and cursor_index >= 0) else 0
+        scroll_row = max(0, min(cursor_row - max_grid_rows // 2, max(0, total_rows - max_grid_rows)))
+
+        for r in range(scroll_row, min(scroll_row + max_grid_rows, total_rows)):
+            row_cells = []
+            for c in range(cols):
+                idx = r * cols + c
+                if idx < len(items):
+                    it = items[idx]
+                    tot_str = format_compact_num(it["total"])
+                    flag = it["flag"]
+                    code = it["code"]
+                    alive = it["alive"]
+                    core = f"[{it['index']:>3}] {flag} {code}:{alive}/{tot_str}"
+                    pad = actual_cell_width - visible_len(core)
+                    if pad > 0:
+                        core += " " * pad
+
+                    if idx == cursor_index and not is_any_cur:
+                        cell_str = f"\033[1;37;44m{core}\033[0m"
+                    elif it["tier"] == 1:
+                        cell_str = f"\033[1;32m{core}\033[0m"
+                    elif it["tier"] == 2:
+                        cell_str = f"\033[43;30m{core}\033[0m"
+                    else:
+                        cell_str = f"\033[2;90m{core}\033[0m"
+                    row_cells.append(cell_str)
+            lines.append("".join(row_cells))
+
+        rendered_rows = min(scroll_row + max_grid_rows, total_rows) - scroll_row
+        for _ in range(max(0, max_grid_rows - rendered_rows)):
+            lines.append("")
+
+        lines.append("─" * sep_len)
+        lines.append("\033[2mNav: [↑/↓/←/→] Move  │  [Enter] Select  │  [0] Clear Filter  │  [Backspace] Edit  │  [Esc/q] Cancel\033[0m\n")
         return "\n".join(lines)
 
     @staticmethod

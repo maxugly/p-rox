@@ -127,8 +127,18 @@ def cmd_run(args):
     # View Mode Toggle: 's' key toggles between Pool Monitor and Gateway Server views
     VIEW_MONITOR = "monitor"
     VIEW_SERVER = "server"
+    VIEW_SLOT_MENU = "slot_menu"
     active_view = [VIEW_MONITOR]
     view_lock = threading.Lock()
+
+    menu_state: Dict[str, Any] = {
+        "slot_id": 0,
+        "slot_num": 1,
+        "cursor_index": 0,
+        "query": "",
+        "items": [],
+        "filtered_items": [],
+    }
 
     start_time = time.monotonic()
     runtime_state = {"session_died": 0, "rate": 0.0, "total_tested": 0}
@@ -176,6 +186,76 @@ def cmd_run(args):
         )
         sys.stdout.write("\033[H" + dashboard_str)
         sys.stdout.flush()
+
+    def _refresh_menu_items():
+        all_items = db.get_country_menu_items()
+        menu_state["items"] = all_items
+        q = str(menu_state["query"]).strip().upper()
+        if not q:
+            menu_state["filtered_items"] = all_items
+        elif q.isdigit():
+            menu_state["filtered_items"] = [it for it in all_items if str(it["index"]).startswith(q)]
+        else:
+            menu_state["filtered_items"] = [it for it in all_items if it["code"].startswith(q)]
+
+    def _draw_slot_menu_view():
+        if not terminal.enabled or not server:
+            return
+        slot_id = menu_state["slot_id"]
+        if slot_id >= len(server.slots):
+            return
+        slot = server.slots[slot_id]
+        _refresh_menu_items()
+        cols, rows = shutil.get_terminal_size(fallback=(100, 30))
+        menu_str = TerminalDashboard.render_country_menu(
+            slot_num=menu_state["slot_num"],
+            port=slot.port,
+            current_filter=slot.country_filter,
+            items=menu_state["filtered_items"],
+            cursor_index=menu_state["cursor_index"],
+            search_query=menu_state["query"],
+            term_width=cols,
+            term_height=rows,
+        )
+        sys.stdout.write("\033[H" + menu_str)
+        sys.stdout.flush()
+
+    def open_slot_menu(slot_index: int):
+        if not serve_enabled or not server or slot_index >= len(server.slots):
+            return
+        with view_lock:
+            active_view[0] = VIEW_SLOT_MENU
+            menu_state["slot_id"] = slot_index
+            menu_state["slot_num"] = slot_index + 1
+            menu_state["cursor_index"] = 0
+            menu_state["query"] = ""
+            sys.stdout.write("\033[r\033[2J\033[H")
+            sys.stdout.flush()
+            _draw_slot_menu_view()
+
+    def confirm_menu_selection():
+        slot_id = menu_state["slot_id"]
+        if server and slot_id < len(server.slots):
+            slot = server.slots[slot_id]
+            f_items = menu_state["filtered_items"]
+            cur_idx = menu_state["cursor_index"]
+            if cur_idx == -1:
+                slot.set_country_filter(None)
+            elif 0 <= cur_idx < len(f_items):
+                selected_code = f_items[cur_idx]["code"]
+                slot.set_country_filter(selected_code)
+        with view_lock:
+            active_view[0] = VIEW_SERVER
+            sys.stdout.write("\033[r\033[2J\033[H")
+            sys.stdout.flush()
+            _draw_server_view()
+
+    def exit_slot_menu():
+        with view_lock:
+            active_view[0] = VIEW_SERVER
+            sys.stdout.write("\033[r\033[2J\033[H")
+            sys.stdout.flush()
+            _draw_server_view()
 
     def toggle_view():
         if not serve_enabled or not terminal.enabled:
@@ -251,6 +331,8 @@ def cmd_run(args):
                             _draw_monitor_header()
                         elif active_view[0] == VIEW_SERVER:
                             _draw_server_view()
+                        elif active_view[0] == VIEW_SLOT_MENU:
+                            _draw_slot_menu_view()
                 except Exception:
                     pass
 
@@ -281,12 +363,83 @@ def cmd_run(args):
                     break
                 if r:
                     ch = sys.stdin.read(1)
-                    if ch in ("s", "S"):
-                        toggle_view()
-                    elif ch in ("+", "="):
-                        handle_add_slot()
-                    elif ch in ("-", "_"):
-                        handle_remove_slot()
+                    if active_view[0] in (VIEW_SERVER, VIEW_MONITOR):
+                        if ch in ("s", "S"):
+                            toggle_view()
+                        elif ch in ("+", "="):
+                            handle_add_slot()
+                        elif ch in ("-", "_"):
+                            handle_remove_slot()
+                        elif ch in ("1", "2", "3", "4", "5", "6", "7", "8", "9"):
+                            slot_idx = int(ch) - 1
+                            open_slot_menu(slot_idx)
+                        elif ch == "0":
+                            open_slot_menu(9)
+                    elif active_view[0] == VIEW_SLOT_MENU:
+                        if ch == "\x1b":
+                            r2, _, _ = select.select([sys.stdin], [], [], 0.05)
+                            if r2:
+                                ch2 = sys.stdin.read(1)
+                                if ch2 == "[":
+                                    r3, _, _ = select.select([sys.stdin], [], [], 0.05)
+                                    if r3:
+                                        ch3 = sys.stdin.read(1)
+                                        cols, _ = shutil.get_terminal_size(fallback=(100, 30))
+                                        sep_len = max(80, min(cols, 140))
+                                        grid_cols = max(1, min(sep_len // 20, 8))
+                                        f_len = len(menu_state["filtered_items"])
+                                        cur = menu_state["cursor_index"]
+                                        if ch3 == "A":  # Up
+                                            if cur == -1:
+                                                pass
+                                            elif cur < grid_cols:
+                                                menu_state["cursor_index"] = -1
+                                            else:
+                                                menu_state["cursor_index"] = max(0, cur - grid_cols)
+                                        elif ch3 == "B":  # Down
+                                            if cur == -1:
+                                                menu_state["cursor_index"] = 0
+                                            else:
+                                                menu_state["cursor_index"] = min(f_len - 1, cur + grid_cols)
+                                        elif ch3 == "C":  # Right
+                                            if cur == -1:
+                                                menu_state["cursor_index"] = 0
+                                            else:
+                                                menu_state["cursor_index"] = min(f_len - 1, cur + 1)
+                                        elif ch3 == "D":  # Left
+                                            if cur == 0:
+                                                menu_state["cursor_index"] = -1
+                                            elif cur > 0:
+                                                menu_state["cursor_index"] = cur - 1
+                                        with view_lock:
+                                            _draw_slot_menu_view()
+                            else:
+                                if menu_state["query"]:
+                                    menu_state["query"] = ""
+                                    menu_state["cursor_index"] = 0
+                                    with view_lock:
+                                        _draw_slot_menu_view()
+                                else:
+                                    exit_slot_menu()
+                        elif ch in ("q", "Q"):
+                            exit_slot_menu()
+                        elif ch in ("\r", "\n"):
+                            confirm_menu_selection()
+                        elif ch in ("\x7f", "\x08"):
+                            if menu_state["query"]:
+                                menu_state["query"] = menu_state["query"][:-1]
+                                menu_state["cursor_index"] = 0
+                                with view_lock:
+                                    _draw_slot_menu_view()
+                        elif ch == "0" and not menu_state["query"]:
+                            menu_state["cursor_index"] = -1
+                            with view_lock:
+                                _draw_slot_menu_view()
+                        elif ch.isalnum():
+                            menu_state["query"] += ch.upper()
+                            menu_state["cursor_index"] = 0
+                            with view_lock:
+                                _draw_slot_menu_view()
         except Exception:
             pass
         finally:
@@ -300,6 +453,27 @@ def cmd_run(args):
         kb_thread.start()
 
     def on_result(candidate, is_alive, profile):
+        if is_alive and server:
+            cand_c = getattr(profile.geo, "country_code", None) if profile.geo else None
+            for slot in server.slots:
+                if slot.stats.status == "waiting":
+                    if not slot.country_filter or (cand_c and cand_c.upper() == slot.country_filter.upper()):
+                        cand_dict = {
+                            "scheme": candidate.get("scheme", "http"),
+                            "host": candidate.get("host", ""),
+                            "port": candidate.get("port", 8080),
+                            "url": candidate.get("url"),
+                            "country": f"{cand_c} ({profile.geo.city})" if (profile.geo and profile.geo.city) else (cand_c or ""),
+                            "first_seen_alive": time.time(),
+                            "latency_ms": getattr(profile.latency, "tcp_handshake_ms", None),
+                            "ttfb_ms": getattr(profile.latency, "http_ttfb_ms", None),
+                            "egress_ip": getattr(profile, "egress_ip", ""),
+                            "anonymity": getattr(profile.security, "anonymity", "unknown") if profile.security else "unknown",
+                        }
+                        slot.assign_proxy(cand_dict)
+                        slot.stats.status = "healthy"
+                        break
+
         with view_lock:
             if active_view[0] != VIEW_MONITOR:
                 return
@@ -330,6 +504,8 @@ def cmd_run(args):
                 _draw_monitor_header()
             elif active_view[0] == VIEW_SERVER:
                 _draw_server_view()
+            elif active_view[0] == VIEW_SLOT_MENU:
+                _draw_slot_menu_view()
 
     try:
         run_continuous_worker(
@@ -339,6 +515,7 @@ def cmd_run(args):
             timeout=timeout,
             batch_size=min(50, workers * 2),
             country=country,
+            priority_countries_fn=(lambda: server.get_waiting_countries()) if server else None,
             stop_event=stop_event,
             on_result=on_result,
             on_tick=on_tick,

@@ -450,3 +450,91 @@ class ProxyDB:
             "countries": countries,
             "anonymity": dict(anon_counts),
         }
+
+    def get_country_menu_items(self) -> List[Dict[str, Any]]:
+        """Return full tiered country breakdown for slot selection menu:
+        Tier 1: Alive > 0 (sorted by alive DESC, candidates DESC)
+        Tier 2: Represented in DB candidates, but 0 alive (sorted by candidates DESC)
+        Tier 3: 0 in DB candidates (all other ISO countries, sorted A-Z)
+        """
+        now = time.time()
+        # Fast query for alive proxies (<1ms)
+        with self.get_connection() as conn:
+            alive_rows = conn.execute(
+                """
+                SELECT UPPER(SUBSTR(country, 1, 2)) as code, COUNT(*)
+                FROM proxies
+                WHERE status = 'alive' AND country IS NOT NULL AND country != '' AND country != '??'
+                GROUP BY code
+                """
+            ).fetchall()
+        alive_counts = dict(alive_rows)
+
+        # Cache candidate counts for 60 seconds
+        cached = getattr(self, "_country_candidate_cache", None)
+        cached_t = getattr(self, "_country_candidate_cache_time", 0.0)
+        if cached is None or (now - cached_t > 60.0):
+            with self.get_connection() as conn:
+                cand_rows = conn.execute(
+                    """
+                    SELECT UPPER(SUBSTR(country, 1, 2)) as code, COUNT(*)
+                    FROM proxies
+                    WHERE country IS NOT NULL AND country != '' AND country != '??'
+                    GROUP BY code
+                    """
+                ).fetchall()
+            cached = dict(cand_rows)
+            self._country_candidate_cache = cached
+            self._country_candidate_cache_time = now
+
+        cand_counts = cached
+
+        from .dashboard import ISO_COUNTRY_CODES, country_code_to_flag
+
+        all_codes = set(ISO_COUNTRY_CODES).union(cand_counts.keys()).union(alive_counts.keys())
+
+        tier1 = [c for c in all_codes if alive_counts.get(c, 0) > 0]
+        tier1.sort(key=lambda c: (-alive_counts[c], -cand_counts.get(c, 0), c))
+
+        tier2 = [c for c in all_codes if alive_counts.get(c, 0) == 0 and cand_counts.get(c, 0) > 0]
+        tier2.sort(key=lambda c: (-cand_counts[c], c))
+
+        tier3 = [c for c in all_codes if cand_counts.get(c, 0) == 0]
+        tier3.sort()
+
+        items = []
+        idx = 1
+        for c in tier1:
+            items.append({
+                "index": idx,
+                "code": c,
+                "flag": country_code_to_flag(c),
+                "alive": alive_counts.get(c, 0),
+                "total": cand_counts.get(c, 0),
+                "tier": 1,
+            })
+            idx += 1
+
+        for c in tier2:
+            items.append({
+                "index": idx,
+                "code": c,
+                "flag": country_code_to_flag(c),
+                "alive": 0,
+                "total": cand_counts.get(c, 0),
+                "tier": 2,
+            })
+            idx += 1
+
+        for c in tier3:
+            items.append({
+                "index": idx,
+                "code": c,
+                "flag": country_code_to_flag(c),
+                "alive": 0,
+                "total": 0,
+                "tier": 3,
+            })
+            idx += 1
+
+        return items

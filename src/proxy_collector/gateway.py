@@ -34,6 +34,7 @@ class SlotStats:
     scheme: str
     host: str
     country: str = ""
+    country_filter: Optional[str] = None
     status: str = "warming"  # warming, waiting, healthy, degraded, swapping
     connections_total: int = 0
     connections_active: int = 0
@@ -90,12 +91,14 @@ class ProxySlot:
 
         self.server: Optional[asyncio.Server] = None
         self.current_proxy: Optional[Dict[str, Any]] = None
+        self.country_filter: Optional[str] = None
         self.stats = SlotStats(
             port=port,
             slot_id=slot_id,
             upstream="none",
             scheme="http",
             host="",
+            country_filter=None,
         )
         self.lock = asyncio.Lock()
         self._consecutive_errors = 0
@@ -170,8 +173,9 @@ class ProxySlot:
 
             # Pick next candidate from gateway/db or pool
             new_p = None
+            target_c = self.country_filter or (self.gateway.country if self.gateway else None)
             if self.gateway:
-                new_p = self.gateway.pick_available_proxy(exclude_slot_id=self.slot_id)
+                new_p = self.gateway.pick_available_proxy(exclude_slot_id=self.slot_id, country=target_c)
             elif self.pool:
                 new_p = self.pool.pick(site=self.target_site)
 
@@ -183,8 +187,47 @@ class ProxySlot:
 
             self.current_proxy = None
             self.stats.status = "waiting"
-            self.stats.upstream = "none (pool warming)"
+            self.stats.upstream = f"warming ({target_c})" if target_c else "none (pool warming)"
             self.stats.first_seen_alive = None
+            if self.on_swap:
+                self.on_swap(self)
+            return False
+
+    def set_country_filter(self, country: Optional[str]) -> bool:
+        """Lock or clear country filter for this slot and immediately drop and swap upstream."""
+        norm_c = country.upper().strip() if country else None
+        if self.country_filter == norm_c and self.current_proxy:
+            return True
+
+        self.country_filter = norm_c
+        self.stats.country_filter = norm_c
+
+        # Drop current proxy
+        self.current_proxy = None
+        self.stats.first_seen_alive = None
+        self.stats.tcp_ms = None
+        self.stats.ttfb_ms = None
+        self.stats.egress_ip = ""
+        self.stats.country = norm_c or ""
+
+        target_c = self.country_filter or (self.gateway.country if self.gateway else None)
+        new_p = None
+        if self.gateway:
+            new_p = self.gateway.pick_available_proxy(exclude_slot_id=self.slot_id, country=target_c)
+        elif self.pool:
+            new_p = self.pool.pick(site=self.target_site)
+
+        if new_p:
+            self.assign_proxy(new_p)
+            self.stats.status = "healthy"
+            if self.on_swap:
+                self.on_swap(self)
+            return True
+        else:
+            self.stats.status = "waiting"
+            self.stats.upstream = f"warming ({target_c})" if target_c else "none (pool warming)"
+            if self.on_swap:
+                self.on_swap(self)
             return False
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -577,8 +620,13 @@ class GatewayServer:
         self._running = False
         self._bg_tasks: List[asyncio.Task] = []
 
-    def pick_available_proxy(self, exclude_slot_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    def pick_available_proxy(
+        self,
+        exclude_slot_id: Optional[int] = None,
+        country: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Find the freshest verified alive proxy not currently assigned to any slot."""
+        target_country = country or self.country
         used_urls = {
             s.stats.upstream
             for s in self.slots
@@ -587,7 +635,7 @@ class GatewayServer:
         if self.db:
             candidates = self.db.get_alive_proxies(
                 limit=max(50, self.slots_count * 3),
-                country=self.country,
+                country=target_country,
             )
             for cand in candidates:
                 cand_url = cand.get("url") or f"{cand.get('scheme')}://{cand.get('host')}:{cand.get('port')}"
@@ -596,6 +644,15 @@ class GatewayServer:
         elif self.pool:
             return self.pool.pick(site=self.target_site)
         return None
+
+    def get_waiting_countries(self) -> List[str]:
+        """Return distinct country filters for slots that are currently waiting."""
+        waiting: List[str] = []
+        for s in self.slots:
+            if s.stats.status == "waiting" and s.country_filter:
+                if s.country_filter not in waiting:
+                    waiting.append(s.country_filter)
+        return waiting
 
     def _init_slots(self):
         """Initialize slot instances."""
@@ -705,7 +762,8 @@ class GatewayServer:
                 # Check if any slot is unassigned, waiting, or degraded
                 for slot in list(self.slots):
                     if not slot.current_proxy or slot.stats.status in ("waiting", "degraded"):
-                        candidate = self.pick_available_proxy(exclude_slot_id=slot.slot_id)
+                        target_c = slot.country_filter or self.country
+                        candidate = self.pick_available_proxy(exclude_slot_id=slot.slot_id, country=target_c)
                         if candidate:
                             slot.assign_proxy(candidate)
 
