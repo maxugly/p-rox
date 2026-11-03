@@ -158,7 +158,7 @@ class ProxyDB:
                 """
                 SELECT id, host
                 FROM proxies
-                WHERE country IS NULL
+                WHERE country IS NULL OR country = ''
                 LIMIT ?
                 """,
                 (limit,),
@@ -180,7 +180,7 @@ class ProxyDB:
     def get_unresolved_geoip_count(self) -> int:
         """Return count of proxies currently missing country geolocation."""
         with self.get_connection() as conn:
-            row = conn.execute("SELECT COUNT(*) FROM proxies WHERE country IS NULL").fetchone()
+            row = conn.execute("SELECT COUNT(*) FROM proxies WHERE country IS NULL OR country = ''").fetchone()
             return row[0] if row else 0
 
     def get_candidates_for_testing(
