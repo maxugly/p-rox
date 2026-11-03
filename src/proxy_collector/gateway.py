@@ -34,7 +34,7 @@ class SlotStats:
     scheme: str
     host: str
     country: str = ""
-    status: str = "warming"  # warming, healthy, degraded, swapping
+    status: str = "warming"  # warming, waiting, healthy, degraded, swapping
     connections_total: int = 0
     connections_active: int = 0
     bytes_sent: int = 0
@@ -44,6 +44,7 @@ class SlotStats:
     tcp_ms: Optional[float] = None
     ttfb_ms: Optional[float] = None
     egress_ip: str = ""
+    first_seen_alive: Optional[float] = None
     last_swapped_at: float = field(default_factory=time.time)
     last_active_at: float = field(default_factory=time.time)
 
@@ -56,16 +57,20 @@ class ProxySlot:
         slot_id: int,
         port: int,
         host: str,
-        pool: ProxyPool,
+        pool: Optional[ProxyPool] = None,
         target_site: Optional[str] = None,
         on_swap: Optional[Any] = None,
+        db: Optional[Any] = None,
+        gateway: Optional[Any] = None,
     ):
         self.slot_id = slot_id
         self.port = port
         self.host = host
-        self.pool = pool
+        self.pool = pool or ProxyPool(cache_dir=DEFAULT_CACHE_DIR, load_db=False)
         self.target_site = target_site
         self.on_swap = on_swap
+        self.db = db
+        self.gateway = gateway
 
         self.server: Optional[asyncio.Server] = None
         self.current_proxy: Optional[Dict[str, Any]] = None
@@ -82,7 +87,7 @@ class ProxySlot:
     def assign_proxy(self, proxy: Dict[str, Any]):
         """Bind this slot to a new upstream proxy."""
         self.current_proxy = proxy
-        url = ProxyPool.requests_url(proxy)
+        url = proxy.get("url") or ProxyPool.requests_url(proxy)
         self.stats.upstream = url
         self.stats.scheme = proxy.get("scheme", "http")
         self.stats.host = proxy.get("host", "")
@@ -91,50 +96,79 @@ class ProxySlot:
         self.stats.last_swapped_at = time.time()
         self._consecutive_errors = 0
 
+        # Alive time tracking
+        if proxy.get("first_seen_alive"):
+            self.stats.first_seen_alive = proxy["first_seen_alive"]
+        elif not self.stats.first_seen_alive:
+            self.stats.first_seen_alive = proxy.get("last_checked_at") or time.time()
+
+        if proxy.get("latency_ms") is not None:
+            self.stats.tcp_ms = proxy["latency_ms"]
+        if proxy.get("ttfb_ms") is not None:
+            self.stats.ttfb_ms = proxy["ttfb_ms"]
+        if proxy.get("egress_ip"):
+            self.stats.egress_ip = proxy["egress_ip"]
+        if proxy.get("anonymity"):
+            self.stats.anonymity = proxy["anonymity"]
+
         # Extract telemetry from pool health profile if available
-        k = ProxyPool._proxy_key(proxy)
-        health_info = self.pool.health.get(k, {})
-        geo_info = health_info.get("geo") or {}
-        if geo_info and isinstance(geo_info, dict):
-            loc_parts = [geo_info.get("country_code", ""), geo_info.get("city", "")]
-            loc_label = " ".join(p for p in loc_parts if p).strip()
-            if loc_label:
-                self.stats.country = loc_label
+        if self.pool:
+            k = ProxyPool._proxy_key(proxy)
+            health_info = self.pool.health.get(k, {})
+            geo_info = health_info.get("geo") or {}
+            if geo_info and isinstance(geo_info, dict):
+                loc_parts = [geo_info.get("country_code", ""), geo_info.get("city", "")]
+                loc_label = " ".join(p for p in loc_parts if p).strip()
+                if loc_label:
+                    self.stats.country = loc_label
 
-        lat_info = health_info.get("latency") or {}
-        if isinstance(lat_info, dict):
-            self.stats.tcp_ms = lat_info.get("tcp_handshake_ms")
-            self.stats.ttfb_ms = lat_info.get("http_ttfb_ms")
+            lat_info = health_info.get("latency") or {}
+            if isinstance(lat_info, dict):
+                if lat_info.get("tcp_handshake_ms") is not None:
+                    self.stats.tcp_ms = lat_info.get("tcp_handshake_ms")
+                if lat_info.get("http_ttfb_ms") is not None:
+                    self.stats.ttfb_ms = lat_info.get("http_ttfb_ms")
 
-        sec_info = health_info.get("security") or {}
-        if isinstance(sec_info, dict):
-            self.stats.anonymity = sec_info.get("anonymity", "unknown")
+            sec_info = health_info.get("security") or {}
+            if isinstance(sec_info, dict):
+                self.stats.anonymity = sec_info.get("anonymity", self.stats.anonymity)
 
-        self.stats.egress_ip = health_info.get("egress", "")
+            if health_info.get("egress"):
+                self.stats.egress_ip = health_info["egress"]
+
         logger.info("Slot %d (:%d) assigned to upstream %s", self.slot_id, self.port, url)
 
     async def swap_upstream(self, reason: str = "error") -> bool:
-        """Hot-swap this slot's upstream proxy with another healthy proxy from the pool."""
+        """Hot-swap this slot's upstream proxy with another healthy proxy from the pool or db."""
         async with self.lock:
             old_p = self.current_proxy
             if old_p:
-                self.pool.fail(old_p, reason=reason)
-                try:
-                    from .db import ProxyDB
-                    url = ProxyPool.requests_url(old_p)
-                    ProxyDB().mark_proxy_failed(url)
-                except Exception:
-                    pass
+                old_url = old_p.get("url") or ProxyPool.requests_url(old_p)
+                if self.pool:
+                    self.pool.fail(old_p, reason=reason)
+                if self.db:
+                    try:
+                        self.db.mark_proxy_failed(old_url)
+                    except Exception:
+                        pass
 
-            # Pick next candidate from pool
-            new_p = self.pool.pick(site=self.target_site)
+            # Pick next candidate from gateway/db or pool
+            new_p = None
+            if self.gateway:
+                new_p = self.gateway.pick_available_proxy(exclude_slot_id=self.slot_id)
+            elif self.pool:
+                new_p = self.pool.pick(site=self.target_site)
+
             if new_p and new_p != old_p:
                 self.assign_proxy(new_p)
                 if self.on_swap:
                     self.on_swap(self)
                 return True
 
-            self.stats.status = "degraded"
+            self.current_proxy = None
+            self.stats.status = "waiting"
+            self.stats.upstream = "none (pool warming)"
+            self.stats.first_seen_alive = None
             return False
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -503,19 +537,44 @@ class GatewayServer:
         pool: Optional[ProxyPool] = None,
         target_site: Optional[str] = None,
         cache_dir: Optional[str | Path] = None,
+        db: Optional[Any] = None,
     ):
         self.slots_count = max(1, slots_count)
         self.base_port = base_port
         self.host = host
         self.cache_dir = Path(cache_dir or DEFAULT_CACHE_DIR).expanduser().resolve()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.pool = pool or ProxyPool(cache_dir=self.cache_dir, load_db=True)
+        self.pool = pool
+        self.db = db
+        if not self.pool and not self.db:
+            try:
+                from .db import ProxyDB
+                self.db = ProxyDB()
+            except Exception:
+                pass
         self.target_site = target_site
 
         self.status_file = self.cache_dir / "gateway_status.json"
         self.slots: List[ProxySlot] = []
         self._running = False
         self._bg_tasks: List[asyncio.Task] = []
+
+    def pick_available_proxy(self, exclude_slot_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """Find the freshest verified alive proxy not currently assigned to any slot."""
+        used_urls = {
+            s.stats.upstream
+            for s in self.slots
+            if s.current_proxy and (exclude_slot_id is None or s.slot_id != exclude_slot_id)
+        }
+        if self.db:
+            candidates = self.db.get_alive_proxies(limit=max(50, self.slots_count * 3))
+            for cand in candidates:
+                cand_url = cand.get("url") or f"{cand.get('scheme')}://{cand.get('host')}:{cand.get('port')}"
+                if cand_url not in used_urls:
+                    return cand
+        elif self.pool:
+            return self.pool.pick(site=self.target_site)
+        return None
 
     def _init_slots(self):
         """Initialize slot instances."""
@@ -528,12 +587,18 @@ class GatewayServer:
                 pool=self.pool,
                 target_site=self.target_site,
                 on_swap=lambda s: self._save_status_snapshot(),
+                db=self.db,
+                gateway=self,
             )
-            # Pre-assign proxy if pool has one
-            candidate = self.pool.pick(site=self.target_site)
+            self.slots.append(slot)
+
+        for slot in self.slots:
+            candidate = self.pick_available_proxy(exclude_slot_id=slot.slot_id)
             if candidate:
                 slot.assign_proxy(candidate)
-            self.slots.append(slot)
+            else:
+                slot.stats.status = "waiting"
+                slot.stats.upstream = "none (pool warming)"
 
     def _save_status_snapshot(self):
         """Write live slot status to gateway_status.json."""
@@ -559,27 +624,38 @@ class GatewayServer:
                 # Save status snapshot periodically
                 self._save_status_snapshot()
 
-                # Check if any slot is unassigned or degraded
+                # Check if any slot is unassigned, waiting, or degraded
                 for slot in self.slots:
-                    if not slot.current_proxy or slot.stats.status == "degraded":
-                        candidate = self.pool.pick(site=self.target_site)
+                    if not slot.current_proxy or slot.stats.status in ("waiting", "degraded"):
+                        candidate = self.pick_available_proxy(exclude_slot_id=slot.slot_id)
                         if candidate:
                             slot.assign_proxy(candidate)
 
-                self.pool.flush_health()
+                if self.pool:
+                    self.pool.flush_health()
             except Exception as exc:
                 logger.debug("Error in health keeper loop: %s", exc)
 
-            await asyncio.sleep(5.0)
+            await asyncio.sleep(3.0)
 
     async def _dashboard_loop(self):
         """Live terminal dashboard if running interactively."""
         while self._running:
             if sys.stdout.isatty():
-                pool_stats = {
-                    "L0 Candidates": len(self.pool.proxies),
-                    "L1 Live": len(self.pool.tier1),
-                }
+                if self.db:
+                    st = self.db.get_stats()
+                    pool_stats = {
+                        "Alive": st.get("alive", 0),
+                        "Untested": st.get("untested", 0),
+                        "Dead": st.get("dead", 0),
+                    }
+                elif self.pool:
+                    pool_stats = {
+                        "L0 Candidates": len(self.pool.proxies),
+                        "L1 Live": len(self.pool.tier1),
+                    }
+                else:
+                    pool_stats = {}
                 dashboard_text = TerminalDashboard.render_gateway_dashboard(
                     slots=self.slots,
                     host=self.host,

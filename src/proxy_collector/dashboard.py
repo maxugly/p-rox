@@ -123,13 +123,14 @@ def render_sticky_header(
     workers: int = 25,
     heartbeat_s: float = 180.0,
     width: Optional[int] = None,
+    gateway_active: bool = False,
 ) -> List[str]:
     """Render the 6-line sticky status box for the top of the terminal."""
     if width is None:
         cols, _ = shutil.get_terminal_size(fallback=(80, 24))
         width = max(70, min(cols, 120))
 
-    title = " p-rox pool monitor "
+    title = " p-rox pool monitor [s: Server View] " if gateway_active else " p-rox pool monitor "
     bar_len = max(0, width - 2 - len(title))
     top_border = f"┌─{title}{'─' * max(0, bar_len - 1)}┐" if bar_len >= 1 else f"┌{'─' * (width - 2)}┐"
 
@@ -264,36 +265,67 @@ class TerminalDashboard:
     @staticmethod
     def render_gateway_dashboard(
         slots: List[Any],
-        host: str,
+        host: str = "127.0.0.1",
         target_site: Optional[str] = None,
         pool_stats: Optional[Dict[str, int]] = None,
+        width: Optional[int] = None,
     ) -> str:
         """Render ANSI live dashboard for local gateway slots."""
         lines = []
         # Clear screen & cursor to home
         lines.append("\033[2J\033[H")
         lines.append(f"\033[1;36m=== p-rox Local Proxy Gateway ({len(slots)} slots on {host}) ===\033[0m")
-        lines.append(f"Target Site: \033[1m{target_site or 'Universal / All Sites'}\033[0m")
+        if target_site:
+            lines.append(f"Target Site: \033[1m{target_site}\033[0m")
         if pool_stats:
-            p_str = " | ".join(f"{k}: {v}" for k, v in pool_stats.items())
+            filtered = {k.title() if isinstance(k, str) else k: v for k, v in pool_stats.items() if k not in ("db_path", "db_size_mb")}
+            p_str = " │ ".join(f"{k}: {v:,}" if isinstance(v, int) else f"{k}: {v}" for k, v in filtered.items())
             lines.append(f"Pool Summary: {p_str}")
 
+        lines.append("\033[2mToggle View: [s] Switch to Pool Monitor  │  [Ctrl+C] Stop\033[0m")
         lines.append("")
         header = (
-            f"\033[1m{'Slot':<5} {'Port':<7} {'Status':<9} {'Location':<14} "
-            f"{'Anon':<7} {'Ping (TCP/TTFB)':<18} {'Active':<7} {'KB':<8} {'Upstream'}\033[0m"
+            f"\033[1m{'Slot':<5} {'Port':<7} {'Status':<10} {'Location':<18} "
+            f"{'Alive':<9} {'Anon':<7} {'Ping (TCP/TTFB)':<16} {'Active':<7} {'KB':<8} {'Upstream'}\033[0m"
         )
         lines.append(header)
-        lines.append("-" * 92)
+        sep_len = 100
+        lines.append("─" * sep_len)
 
         for s in slots:
             stats = s.stats
-            status_color = "\033[32m" if stats.status == "healthy" else "\033[33m"
-            status_str = f"{status_color}{stats.status:<9}\033[0m"
+            if stats.status == "healthy":
+                status_color = "\033[32m"
+            elif stats.status == "waiting":
+                status_color = "\033[33m"
+            else:
+                status_color = "\033[31m"
+            status_str = f"{status_color}{stats.status:<10}\033[0m"
 
-            loc = stats.country or "N/A"
-            if len(loc) > 13:
-                loc = loc[:12] + "…"
+            raw_loc = stats.country or "N/A"
+            code = raw_loc.split()[0].upper()[:2] if raw_loc and raw_loc != "N/A" else ""
+            flag = country_code_to_flag(code)
+            loc = f"{flag} {raw_loc}" if flag else raw_loc
+            vlen = visible_len(loc)
+            if vlen < 18:
+                loc_padded = loc + " " * (18 - vlen)
+            else:
+                loc_padded = loc[:17] + "…"
+
+            # Alive Time
+            if stats.status == "healthy":
+                first_seen = getattr(stats, "first_seen_alive", None)
+                last_swapped = getattr(stats, "last_swapped_at", None)
+                if isinstance(first_seen, (int, float)):
+                    alive_s = max(0.0, time.time() - first_seen)
+                    alive_str = format_duration(alive_s)
+                elif isinstance(last_swapped, (int, float)):
+                    alive_s = max(0.0, time.time() - last_swapped)
+                    alive_str = format_duration(alive_s)
+                else:
+                    alive_str = "-"
+            else:
+                alive_str = "-"
 
             anon = getattr(stats, "anonymity", "unknown")[:6]
             tcp = getattr(stats, "tcp_ms", None)
@@ -305,18 +337,18 @@ class TerminalDashboard:
                 ping_str = "- / -"
 
             kb = (stats.bytes_received + stats.bytes_sent) / 1024
-            upstream = stats.upstream or "None (idle)"
+            upstream = stats.upstream or "none"
             if len(upstream) > 28:
                 upstream = upstream[:27] + "…"
 
             line = (
-                f"{s.slot_id:<5} {s.port:<7} {status_str} {loc:<14} "
-                f"{anon:<7} {ping_str:<18} {stats.connections_active:<7} {kb:<8.1f} {upstream}"
+                f"{s.slot_id:<5} {s.port:<7} {status_str} {loc_padded} "
+                f"{alive_str:<9} {anon:<7} {ping_str:<16} {stats.connections_active:<7} {kb:<8.1f} {upstream}"
             )
             lines.append(line)
 
-        lines.append("-" * 92)
-        lines.append("\033[2mPress Ctrl+C to stop.\033[0m\n")
+        lines.append("─" * sep_len)
+        lines.append("\033[2mPress 's' to toggle monitor / server view. Press Ctrl+C to stop.\033[0m\n")
         return "\n".join(lines)
 
     @staticmethod

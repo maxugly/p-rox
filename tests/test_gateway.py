@@ -176,3 +176,92 @@ def test_cmd_gateway_cli_flags(tmp_path):
     cmd_gateway(args)
 
 
+def test_gateway_with_proxydb_alive_assignment_and_waiting(tmp_path):
+    import time
+    from proxy_collector.db import ProxyDB
+    from proxy_collector.models import Proxy
+
+    db = ProxyDB(db_path=tmp_path / "proxies.db")
+    p1 = Proxy(scheme="http", host="10.0.0.1", port=8080)
+    p2 = Proxy(scheme="http", host="10.0.0.2", port=8080)
+    db.upsert_batch([p1, p2])
+
+    t_seen = time.time() - 300.0
+    db.record_test_result(p1.url, is_alive=True, latency_ms=40.0, country="US (Ashburn)")
+    db.record_test_result(p2.url, is_alive=True, latency_ms=50.0, country="DE (Frankfurt)")
+    # Overwrite first_seen_alive to verify time_alive tracking
+    with db.get_connection() as conn:
+        conn.execute("UPDATE proxies SET first_seen_alive = ? WHERE url = ?", (t_seen, p1.url))
+
+    server = GatewayServer(
+        slots_count=4,
+        base_port=3030,
+        host="127.0.0.1",
+        db=db,
+        cache_dir=tmp_path,
+    )
+    server._init_slots()
+
+    assert len(server.slots) == 4
+    # First 2 slots should be assigned distinct alive proxies
+    assert server.slots[0].stats.status == "healthy"
+    assert server.slots[0].stats.upstream in (p1.url, p2.url)
+    assert server.slots[1].stats.status == "healthy"
+    assert server.slots[1].stats.upstream in (p1.url, p2.url)
+    assert server.slots[0].stats.upstream != server.slots[1].stats.upstream
+
+    # Slots 2 and 3 must be waiting because db only has 2 alive proxies
+    assert server.slots[2].stats.status == "waiting"
+    assert server.slots[2].stats.upstream == "none (pool warming)"
+    assert server.slots[3].stats.status == "waiting"
+    assert server.slots[3].stats.upstream == "none (pool warming)"
+
+
+def test_gateway_time_alive_in_dashboard():
+    import time
+    from unittest.mock import MagicMock
+    from proxy_collector.dashboard import TerminalDashboard
+
+    mock_slot = MagicMock()
+    mock_slot.slot_id = 0
+    mock_slot.port = 3030
+    mock_slot.stats.status = "healthy"
+    mock_slot.stats.country = "US Ashburn"
+    mock_slot.stats.anonymity = "elite"
+    mock_slot.stats.tcp_ms = 42.0
+    mock_slot.stats.ttfb_ms = 110.0
+    mock_slot.stats.connections_active = 1
+    mock_slot.stats.bytes_received = 2048
+    mock_slot.stats.bytes_sent = 1024
+    mock_slot.stats.upstream = "http://10.0.0.1:8080"
+    mock_slot.stats.first_seen_alive = time.time() - 450.0  # 7m 30s ago
+
+    out = TerminalDashboard.render_gateway_dashboard(
+        slots=[mock_slot],
+        host="127.0.0.1",
+    )
+
+    assert "7m 30s" in out
+    assert "Toggle View: [s]" in out
+    assert "3030" in out
+    assert "US Ashburn" in out
+
+
+def test_cli_serve_flag_parser():
+    import argparse
+    from proxy_collector.cli import cmd_run, main
+
+    # Test that the argument parser supports --serve, --slots, --base-port
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--serve", action="store_true")
+    parser.add_argument("--slots", type=int, default=10)
+    parser.add_argument("--base-port", type=int, default=3030)
+    parser.add_argument("--host", type=str, default="127.0.0.1")
+
+    args = parser.parse_args(["--serve", "--slots", "5", "--base-port", "3030"])
+    assert args.serve is True
+    assert args.slots == 5
+    assert args.base_port == 3030
+    assert args.host == "127.0.0.1"
+
+

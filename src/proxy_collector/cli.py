@@ -31,7 +31,7 @@ def setup_logging(verbose: bool = False):
     import urllib3
 
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    level = logging.DEBUG if verbose else logging.INFO
+    level = logging.DEBUG if verbose else logging.WARNING
     logging.basicConfig(
         level=level,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -53,6 +53,36 @@ def cmd_run(args):
     workers = getattr(args, "workers", 25)
     keepalive = getattr(args, "keepalive", 180.0)
     timeout = getattr(args, "timeout", 6.0)
+    serve_enabled = getattr(args, "serve", False)
+
+    # 2. Start Gateway Server if --serve is requested
+    server = None
+    gateway_loop = None
+    if serve_enabled:
+        gw_slots = getattr(args, "slots", 10)
+        gw_base_port = getattr(args, "base_port", 3030)
+        gw_host = getattr(args, "host", "127.0.0.1")
+        gw_site = getattr(args, "site", None)
+        gw_cache_dir = getattr(args, "cache_dir", None)
+
+        server = GatewayServer(
+            slots_count=gw_slots,
+            base_port=gw_base_port,
+            host=gw_host,
+            target_site=gw_site,
+            cache_dir=gw_cache_dir,
+            db=db,
+        )
+
+        gateway_loop = asyncio.new_event_loop()
+
+        def _run_gateway():
+            asyncio.set_event_loop(gateway_loop)
+            gateway_loop.run_until_complete(server.start(interactive=False))
+            gateway_loop.run_forever()
+
+        gw_thread = threading.Thread(target=_run_gateway, daemon=True)
+        gw_thread.start()
 
     terminal = StickyTerminal(header_lines=6)
     stop_event = threading.Event()
@@ -66,26 +96,73 @@ def cmd_run(args):
         except (ValueError, RuntimeError):
             pass
 
-    # Draw initial sticky header
-    initial_analytics = db.get_pool_analytics()
+    # View Mode Toggle: 's' key toggles between Pool Monitor and Gateway Server views
+    VIEW_MONITOR = "monitor"
+    VIEW_SERVER = "server"
+    active_view = [VIEW_MONITOR]
+    view_lock = threading.Lock()
+
     start_time = time.monotonic()
     runtime_state = {"session_died": 0, "rate": 0.0, "total_tested": 0}
 
-    if terminal.enabled:
-        terminal.init_terminal()
-        header_lines = render_sticky_header(
-            analytics=initial_analytics,
-            session_died=0,
-            uptime_s=0.0,
-            speed=0.0,
+    def _draw_monitor_header():
+        if not terminal.enabled:
+            return
+        cur_analytics = db.get_pool_analytics()
+        elapsed = time.monotonic() - start_time
+        cur_header = render_sticky_header(
+            analytics=cur_analytics,
+            session_died=runtime_state["session_died"],
+            uptime_s=elapsed,
+            speed=runtime_state["rate"],
             workers=workers,
             heartbeat_s=keepalive,
+            gateway_active=serve_enabled,
         )
-        terminal.update_header(header_lines)
+        terminal.update_header(cur_header)
+
+    def _draw_server_view():
+        if not terminal.enabled or not server:
+            return
+        st = db.get_stats()
+        pool_stats = {
+            "Alive": st.get("alive", 0),
+            "Untested": st.get("untested", 0),
+            "Dead": st.get("dead", 0),
+        }
+        dashboard_str = TerminalDashboard.render_gateway_dashboard(
+            slots=server.slots,
+            host=server.host,
+            target_site=server.target_site,
+            pool_stats=pool_stats,
+        )
+        sys.stdout.write("\033[H" + dashboard_str)
+        sys.stdout.flush()
+
+    def toggle_view():
+        if not serve_enabled or not terminal.enabled:
+            return
+        with view_lock:
+            if active_view[0] == VIEW_MONITOR:
+                active_view[0] = VIEW_SERVER
+                sys.stdout.write("\033[r\033[2J\033[H")
+                sys.stdout.flush()
+                _draw_server_view()
+            else:
+                active_view[0] = VIEW_MONITOR
+                terminal.init_terminal()
+                _draw_monitor_header()
+
+    # Draw initial sticky header
+    if terminal.enabled:
+        terminal.init_terminal()
+        _draw_monitor_header()
     else:
         print("=" * 80)
         print("  p-rox — Continuous Live Proxy Acquisition & Pool Maintenance")
         print(f"  Workers: {workers} | 3-Min Heartbeat: {keepalive}s | Database: {db.db_path}")
+        if serve_enabled and server:
+            print(f"  Gateway: {server.slots_count} slots on {server.host}:{server.base_port}..{server.base_port + server.slots_count - 1}")
         print("  Press Ctrl+C to stop cleanly.")
         print("=" * 80)
 
@@ -96,25 +173,61 @@ def cmd_run(args):
             if stop_event.is_set():
                 break
             if terminal.enabled:
-                elapsed = time.monotonic() - start_time
                 try:
-                    cur_analytics = db.get_pool_analytics()
-                    cur_header = render_sticky_header(
-                        analytics=cur_analytics,
-                        session_died=runtime_state["session_died"],
-                        uptime_s=elapsed,
-                        speed=runtime_state["rate"],
-                        workers=workers,
-                        heartbeat_s=keepalive,
-                    )
-                    terminal.update_header(cur_header)
+                    with view_lock:
+                        if active_view[0] == VIEW_MONITOR:
+                            _draw_monitor_header()
+                        elif active_view[0] == VIEW_SERVER:
+                            _draw_server_view()
                 except Exception:
                     pass
 
     ticker_thread = threading.Thread(target=_clock_ticker, daemon=True)
     ticker_thread.start()
 
+    # Interactive keyboard listener for 's' single-button toggle
+    def _keyboard_listener():
+        if not sys.stdin.isatty():
+            return
+        try:
+            import select
+            import termios
+            import tty
+        except ImportError:
+            return
+
+        try:
+            old_attr = termios.tcgetattr(sys.stdin)
+        except Exception:
+            return
+
+        try:
+            tty.setcbreak(sys.stdin.fileno())
+            while not stop_event.is_set():
+                r, _, _ = select.select([sys.stdin], [], [], 0.2)
+                if stop_event.is_set():
+                    break
+                if r:
+                    ch = sys.stdin.read(1)
+                    if ch in ("s", "S"):
+                        toggle_view()
+        except Exception:
+            pass
+        finally:
+            try:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_attr)
+            except Exception:
+                pass
+
+    if serve_enabled and sys.stdin.isatty():
+        kb_thread = threading.Thread(target=_keyboard_listener, daemon=True)
+        kb_thread.start()
+
     def on_result(candidate, is_alive, profile):
+        with view_lock:
+            if active_view[0] != VIEW_MONITOR:
+                return
+
         url = candidate.get("url") or f"{candidate.get('scheme')}://{candidate.get('host')}:{candidate.get('port')}"
         if is_alive:
             lat = f"{profile.latency.tcp_handshake_ms:.0f}ms"
@@ -136,24 +249,11 @@ def cmd_run(args):
         runtime_state["rate"] = rate
         runtime_state["total_tested"] = cur_stats.get("total_tested_session", 0)
 
-        analytics = db.get_pool_analytics()
-        session_died = runtime_state["session_died"]
-        uptime_s = time.monotonic() - start_time
-        if terminal.enabled:
-            header_lines = render_sticky_header(
-                analytics=analytics,
-                session_died=session_died,
-                uptime_s=uptime_s,
-                speed=rate,
-                workers=workers,
-                heartbeat_s=keepalive,
-            )
-            terminal.update_header(header_lines)
-        else:
-            alive = cur_stats.get("alive", 0)
-            untested = cur_stats.get("untested", 0)
-            dead = cur_stats.get("dead", 0)
-            print(f"--- Pool: {alive} ALIVE | {untested:,} untested | {dead} Dead ({session_died} Died) | Speed: {rate:.1f}/s ---")
+        with view_lock:
+            if active_view[0] == VIEW_MONITOR:
+                _draw_monitor_header()
+            elif active_view[0] == VIEW_SERVER:
+                _draw_server_view()
 
     try:
         run_continuous_worker(
@@ -169,6 +269,14 @@ def cmd_run(args):
     except KeyboardInterrupt:
         stop_event.set()
     finally:
+        stop_event.set()
+        if server and gateway_loop and gateway_loop.is_running():
+            try:
+                fut = asyncio.run_coroutine_threadsafe(server.stop(), gateway_loop)
+                fut.result(timeout=2.0)
+            except Exception:
+                pass
+            gateway_loop.call_soon_threadsafe(gateway_loop.stop)
         terminal.restore()
 
     print("\n" + "-" * 80)
@@ -478,12 +586,17 @@ def main():
     parser.add_argument("--keepalive", type=int, default=180, help="Heartbeat re-check interval in seconds (default: 180s)")
     parser.add_argument("--timeout", type=float, default=6.0, help="Socket timeout per test (default: 6.0s)")
     parser.add_argument("--sources", type=str, default=None, help="Directory for cached feed files")
+    parser.add_argument("--serve", action="store_true", help="Start local forward proxy gateway on ports 3030..3039")
+    parser.add_argument("--slots", type=int, default=10, help="Number of forward proxy gateway slots (default: 10)")
+    parser.add_argument("--base-port", type=int, default=3030, help="Starting base port for gateway slots (default: 3030)")
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Gateway bind host (default: 127.0.0.1)")
+    parser.add_argument("--site", type=str, default=None, help="Target qualification site for gateway proxies")
     parser.set_defaults(func=cmd_run)
 
     subparsers = parser.add_subparsers(
         dest="command",
         required=False,
-        metavar="{run,sync,test,status,reset,update-geoip}",
+        metavar="{run,sync,test,status,reset,update-geoip,gateway}",
     )
 
     # 1. run (explicit alias for default runner)
@@ -493,6 +606,11 @@ def main():
     p_run.add_argument("--keepalive", type=int, default=180)
     p_run.add_argument("--timeout", type=float, default=6.0)
     p_run.add_argument("--sources", type=str, default=None)
+    p_run.add_argument("--serve", action="store_true", help="Start local forward proxy gateway on ports 3030..3039")
+    p_run.add_argument("--slots", type=int, default=10, help="Number of forward proxy gateway slots (default: 10)")
+    p_run.add_argument("--base-port", type=int, default=3030, help="Starting base port for gateway slots (default: 3030)")
+    p_run.add_argument("--host", type=str, default="127.0.0.1", help="Gateway bind host (default: 127.0.0.1)")
+    p_run.add_argument("--site", type=str, default=None, help="Target qualification site for gateway proxies")
     p_run.set_defaults(func=cmd_run)
 
     # 2. sync (aliases: fetch, update)
@@ -531,19 +649,18 @@ def main():
     p_geoip.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
     p_geoip.set_defaults(func=cmd_update_geoip)
 
-    # Server / gateway is decoupled and disabled by default
-    if any(arg in sys.argv for arg in ("gateway", "serve")):
-        p_gateway = subparsers.add_parser("gateway", aliases=["serve"], help="[Experimental] Run local proxy server")
-        p_gateway.add_argument("--slots", type=int, default=10)
-        p_gateway.add_argument("--base-port", type=int, default=3030)
-        p_gateway.add_argument("--host", type=str, default="127.0.0.1")
-        p_gateway.add_argument("--site", type=str, default=None)
-        p_gateway.add_argument("--cache-dir", type=str, default=None)
-        p_gateway.add_argument("--daemon", action="store_true")
-        p_gateway.add_argument("--stop", action="store_true")
-        p_gateway.add_argument("--status", action="store_true")
-        p_gateway.add_argument("--gen-runit", type=str, default=None)
-        p_gateway.set_defaults(func=cmd_gateway)
+    # 7. gateway (standalone local proxy server)
+    p_gateway = subparsers.add_parser("gateway", aliases=["serve"], help="Run standalone local proxy server")
+    p_gateway.add_argument("--slots", type=int, default=10, help="Number of forward proxy slots (default: 10)")
+    p_gateway.add_argument("--base-port", type=int, default=3030, help="Starting base port (default: 3030)")
+    p_gateway.add_argument("--host", type=str, default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
+    p_gateway.add_argument("--site", type=str, default=None, help="Target qualification site")
+    p_gateway.add_argument("--cache-dir", type=str, default=None, help="Cache directory")
+    p_gateway.add_argument("--daemon", action="store_true", help="Run gateway as background daemon")
+    p_gateway.add_argument("--stop", action="store_true", help="Stop background daemon")
+    p_gateway.add_argument("--status", action="store_true", help="Check gateway status")
+    p_gateway.add_argument("--gen-runit", type=str, default=None, help="Generate runit service script")
+    p_gateway.set_defaults(func=cmd_gateway)
 
     args = parser.parse_args()
     setup_logging(args.verbose)

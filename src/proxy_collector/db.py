@@ -234,7 +234,7 @@ class ProxyDB:
         with self.get_connection() as conn:
             rows = conn.execute(
                 """
-                SELECT id, scheme, host, port, username, password, url, latency_ms, ttfb_ms, egress_ip, country, city, asn, anonymity, last_checked_at
+                SELECT id, scheme, host, port, username, password, url, latency_ms, ttfb_ms, egress_ip, country, city, asn, anonymity, first_seen_alive, last_checked_at
                 FROM proxies
                 WHERE status = 'alive'
                 ORDER BY last_checked_at DESC, latency_ms ASC
