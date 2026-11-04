@@ -1,11 +1,14 @@
-"""High-performance concurrent proxy list fetcher with caching and atomic writes."""
+"""High-performance concurrent proxy list fetcher with caching, conditional HTTP, and atomic writes."""
 
+import json
 import logging
 import os
+import shutil
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 import requests
 from urllib3.util import Timeout
 
@@ -48,6 +51,45 @@ class ProxyFetcher:
         self.connect_timeout = connect_timeout
         self.read_timeout = read_timeout
         self.user_agent = user_agent
+        self._meta_lock = threading.Lock()
+        self._meta = self._load_meta()
+
+    @property
+    def meta_path(self) -> Path:
+        """Path to cache metadata JSON file."""
+        return self.cache_dir / ".feed_meta.json"
+
+    def _load_meta(self) -> Dict[str, Dict[str, Any]]:
+        p = self.meta_path
+        if not p.is_file():
+            return {}
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            return {}
+
+    def _save_meta_unlocked(self):
+        p = self.meta_path
+        tmp = p.with_suffix(f".tmp.{os.getpid()}")
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(self._meta, fh, indent=2)
+            os.replace(tmp, p)
+        except Exception as exc:
+            logger.debug("Failed to write feed meta: %s", exc)
+
+    def get_feed_meta(self, url: str) -> Dict[str, Any]:
+        """Get cached ETag/Last-Modified metadata for a feed URL."""
+        with self._meta_lock:
+            return dict(self._meta.get(url, {}))
+
+    def set_feed_meta(self, url: str, **kwargs):
+        """Update and persist metadata for a feed URL."""
+        with self._meta_lock:
+            rec = self._meta.setdefault(url, {})
+            rec.update(kwargs)
+            self._save_meta_unlocked()
 
     def get_cached_path(self, feed: Feed) -> Path:
         """Return the destination path in cache for a given feed."""
@@ -67,16 +109,20 @@ class ProxyFetcher:
         self,
         feed: Feed,
         force: bool = False,
+        check_conditional: bool = False,
         session: Optional[requests.Session] = None,
     ) -> FetchResult:
-        """Fetch a single feed or reuse cached copy if valid."""
+        """Fetch a single feed or reuse cached copy if valid.
+
+        Supports HTTP 304 Not Modified via ETag and If-Modified-Since.
+        """
         if not feed.enabled:
             return FetchResult(feed=feed, status="skipped")
 
         dest_path = self.get_cached_path(feed)
         stale = self.is_stale(dest_path)
 
-        if not stale and not force:
+        if not stale and not force and not check_conditional:
             return FetchResult(
                 feed=feed,
                 status="cached",
@@ -95,10 +141,44 @@ class ProxyFetcher:
             "Accept": "*/*",
         }
 
+        # Add conditional headers if cached copy exists
+        meta = self.get_feed_meta(feed.url)
+        if dest_path.is_file() and not force:
+            etag = meta.get("etag")
+            last_mod = meta.get("last_modified")
+            if etag:
+                headers["If-None-Match"] = etag
+            if last_mod:
+                headers["If-Modified-Since"] = last_mod
+
         try:
             timeout = Timeout(connect=self.connect_timeout, read=self.read_timeout)
             with req_session.get(feed.url, headers=headers, timeout=timeout, stream=True) as resp:
+                # Handle HTTP 304 Not Modified
+                if getattr(resp, "status_code", 200) == 304:
+                    try:
+                        dest_path.touch()
+                    except OSError:
+                        pass
+                    duration = time.monotonic() - start_time
+                    self.set_feed_meta(feed.url, last_checked=time.time(), status="not_modified")
+                    return FetchResult(
+                        feed=feed,
+                        status="not_modified",
+                        cached_path=str(dest_path),
+                        bytes_downloaded=0,
+                        duration_seconds=duration,
+                    )
+
                 resp.raise_for_status()
+
+                # If existing cached file exists, backup to .prev for delta extraction
+                if dest_path.is_file():
+                    prev_path = dest_path.with_suffix(dest_path.suffix + ".prev")
+                    try:
+                        shutil.copyfile(dest_path, prev_path)
+                    except OSError:
+                        pass
 
                 bytes_count = 0
                 with open(temp_path, "wb") as fh:
@@ -110,6 +190,20 @@ class ProxyFetcher:
                 # Atomic replace
                 os.replace(temp_path, dest_path)
                 duration = time.monotonic() - start_time
+
+                resp_headers = getattr(resp, "headers", {}) or {}
+                new_etag = resp_headers.get("ETag") or resp_headers.get("etag")
+                new_last_mod = resp_headers.get("Last-Modified") or resp_headers.get("last-modified")
+
+                self.set_feed_meta(
+                    feed.url,
+                    etag=new_etag,
+                    last_modified=new_last_mod,
+                    last_checked=time.time(),
+                    bytes_downloaded=bytes_count,
+                    status="downloaded",
+                )
+
                 return FetchResult(
                     feed=feed,
                     status="downloaded",
@@ -154,6 +248,7 @@ class ProxyFetcher:
         self,
         feeds: List[Feed],
         force: bool = False,
+        check_conditional: bool = False,
         progress_callback: Optional[Callable[[FetchResult], None]] = None,
     ) -> List[FetchResult]:
         """Fetch all enabled feeds concurrently."""
@@ -166,7 +261,7 @@ class ProxyFetcher:
         workers = min(self.concurrency, len(enabled_feeds))
         with ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_feed = {
-                executor.submit(self.fetch_feed, feed, force): feed
+                executor.submit(self.fetch_feed, feed, force, check_conditional): feed
                 for feed in enabled_feeds
             }
 

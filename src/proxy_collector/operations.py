@@ -21,14 +21,20 @@ logger = logging.getLogger(__name__)
 def sync_candidates(
     db: ProxyDB,
     force: bool = False,
+    check_conditional: bool = False,
+    only_updated: bool = False,
     sources_dir: Optional[Path] = None,
     concurrency: int = 10,
     resolve_geoip: bool = True,
     geoip_resolver: Optional[GeoIPResolver] = None,
     on_feed_progress: Optional[Callable[[str, str, int, str], None]] = None,
     on_import_progress: Optional[Callable[[int], None]] = None,
+    on_status_msg: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
-    """Fetch public feeds and bulk-load deduplicated candidate proxies into SQLite."""
+    """Fetch public feeds and bulk-load deduplicated candidate proxies into SQLite.
+
+    Supports HTTP 304 conditional checks and delta ingestion for maximum performance.
+    """
     start_time = time.monotonic()
 
     # Determine sources cache location
@@ -44,17 +50,63 @@ def sync_candidates(
         concurrency=concurrency,
     )
 
-    # 1. Fetch remote feeds if stale or requested
+    # 1. Fetch remote feeds if stale, forced, or conditionally requested
     def _feed_cb(res):
         if on_feed_progress:
             on_feed_progress(res.status, res.feed.source_name, res.bytes_downloaded, res.error or "")
 
-    fetch_results = collector.fetch(force=force, on_progress=_feed_cb)
+    fetch_results = collector.fetch(
+        force=force,
+        check_conditional=check_conditional,
+        on_progress=_feed_cb,
+    )
     fetch_duration = time.monotonic() - start_time
+
+    downloaded = [r for r in fetch_results if r.status == "downloaded"]
+    not_modified = [r for r in fetch_results if r.status == "not_modified"]
+    cached = [r for r in fetch_results if r.status == "cached"]
+    failed = [r for r in fetch_results if r.status == "failed"]
+
+    # If only_updated requested and existing database already has candidates:
+    db_stats = db.get_stats()
+    if only_updated and not force and db_stats.get("total", 0) > 0:
+        if not downloaded:
+            # All feeds are up to date! 0 new proxies to parse or insert
+            if on_status_msg:
+                on_status_msg(
+                    f"All {len(fetch_results)} feeds up-to-date ({len(not_modified)} 304, {len(cached)} cached). 0 new candidates."
+                )
+            return {
+                "feeds_downloaded": 0,
+                "feeds_not_modified": len(not_modified),
+                "feeds_cached": len(cached),
+                "feeds_failed": len(failed),
+                "total_parsed": 0,
+                "newly_added": 0,
+                "total_in_db": db_stats["total"],
+                "untested_in_db": db_stats["untested"],
+                "unresolved_geoip": db_stats.get("unresolved_geoip", 0),
+                "resolved_geoip": db_stats.get("resolved_geoip", 0),
+                "duration_seconds": round(time.monotonic() - start_time, 2),
+                "fetch_seconds": round(fetch_duration, 2),
+                "import_seconds": 0.0,
+            }
+
+        target_feeds = [r.feed for r in downloaded]
+        if on_status_msg:
+            on_status_msg(
+                f"{len(downloaded)} feeds updated ({len(not_modified)} unchanged). Ingesting new candidates..."
+            )
+        dedup_stream = collector.collect_stream(
+            web_only=True,
+            feeds=target_feeds,
+            only_delta=True,
+        )
+    else:
+        dedup_stream = collector.collect_stream(web_only=True)
 
     # 2. Stream candidates through canonical deduplicator directly into SQLite
     stream_start = time.monotonic()
-    dedup_stream = collector.collect_stream(web_only=True)
 
     batch: List[Proxy] = []
     total_streamed = 0
@@ -94,9 +146,10 @@ def sync_candidates(
     stats = db.get_stats()
 
     return {
-        "feeds_downloaded": sum(1 for r in fetch_results if r.status == "downloaded"),
-        "feeds_cached": sum(1 for r in fetch_results if r.status == "cached"),
-        "feeds_failed": sum(1 for r in fetch_results if r.status == "failed"),
+        "feeds_downloaded": len(downloaded),
+        "feeds_not_modified": len(not_modified),
+        "feeds_cached": len(cached),
+        "feeds_failed": len(failed),
         "total_parsed": total_streamed,
         "newly_added": newly_inserted,
         "total_in_db": stats["total"],
@@ -473,5 +526,106 @@ def start_background_geoip_thread(
     )
     t.start()
     return t
+
+
+def run_background_sync_worker(
+    db: ProxyDB,
+    sync_state: Dict[str, Any],
+    stop_event: Optional[Any] = None,
+    trigger_event: Optional[Any] = None,
+    interval_seconds: float = 86400.0,
+    resolve_geoip: bool = True,
+    geoip_resolver: Optional[GeoIPResolver] = None,
+    on_status_msg: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Run daily background sync worker loop.
+
+    Uses conditional HTTP (304) and delta ingestion so unchanged feeds cost 0 bandwidth.
+    Can be immediately triggered on-demand via trigger_event.
+    """
+    stop = stop_event or threading.Event()
+    trigger = trigger_event or threading.Event()
+
+    sync_state["status"] = "idle"
+    sync_state["feeds_checked"] = 0
+    sync_state["feeds_total"] = 52
+    sync_state["next_sync_time"] = time.time() + interval_seconds
+    sync_state["last_sync_time"] = 0.0
+    sync_state["last_sync_result"] = "Scheduled daily"
+
+    while not stop.is_set():
+        now = time.time()
+        # Sleep in small slices until due or triggered
+        if now < sync_state["next_sync_time"] and not trigger.is_set():
+            trigger.wait(timeout=0.05)
+            continue
+
+        trigger.clear()
+        if stop.is_set():
+            break
+
+        sync_state["status"] = "checking"
+        sync_state["feeds_checked"] = 0
+        if on_status_msg:
+            on_status_msg("Checking upstream feeds for updates (HTTP conditional)...")
+
+        try:
+            def _feed_progress(st, src, b_down, err):
+                sync_state["feeds_checked"] += 1
+
+            res = sync_candidates(
+                db=db,
+                force=False,
+                check_conditional=True,
+                only_updated=True,
+                resolve_geoip=resolve_geoip,
+                geoip_resolver=geoip_resolver,
+                on_feed_progress=_feed_progress,
+                on_status_msg=on_status_msg,
+            )
+            down = res.get("feeds_downloaded", 0)
+            not_mod = res.get("feeds_not_modified", 0)
+            added = res.get("newly_added", 0)
+            res_str = f"{not_mod} unchanged (304), {down} updated (+{added:,} new)"
+
+            sync_state["status"] = "idle"
+            sync_state["last_sync_time"] = time.time()
+            sync_state["next_sync_time"] = time.time() + interval_seconds
+            sync_state["last_sync_result"] = res_str
+            sync_state["new_candidates_added"] = added
+
+            if on_status_msg:
+                on_status_msg(f"Daily sync complete: {res_str}. Next check in {int(interval_seconds // 3600)}h.")
+        except Exception as exc:
+            logger.warning("Background feed sync failed: %s", exc)
+            sync_state["status"] = "failed"
+            sync_state["last_sync_result"] = f"Error ({type(exc).__name__})"
+            sync_state["next_sync_time"] = time.time() + min(3600.0, interval_seconds)
+            if on_status_msg:
+                on_status_msg(f"Daily sync error: {exc}")
+
+
+def start_background_sync_thread(
+    db: ProxyDB,
+    sync_state: Dict[str, Any],
+    stop_event: Optional[Any] = None,
+    trigger_event: Optional[Any] = None,
+    interval_seconds: float = 86400.0,
+    resolve_geoip: bool = True,
+    geoip_resolver: Optional[GeoIPResolver] = None,
+    on_status_msg: Optional[Callable[[str], None]] = None,
+) -> threading.Thread:
+    """Start background feed update thread."""
+    stop = stop_event or threading.Event()
+    trigger = trigger_event or threading.Event()
+    t = threading.Thread(
+        target=run_background_sync_worker,
+        args=(db, sync_state, stop, trigger, interval_seconds, resolve_geoip, geoip_resolver, on_status_msg),
+        name="p-rox-feed-syncer",
+        daemon=True,
+    )
+    t.start()
+    return t
+
 
 

@@ -90,6 +90,13 @@ When started with the `--serve` flag, `p-rox` opens an asynchronous forward prox
 - **Dynamic Slot Scaling**: Slots can be scaled up or down on the fly (`+` to add ports, `-` to remove ports).
 - **Survival Duration**: Tracks exactly how long each assigned proxy has been continuously verified alive (`Alive Time`).
 
+### 7. Daily Background Sync & Delta Merging
+To keep candidate pools consistently fresh without restarting or degrading performance:
+- **HTTP 304 Conditional Checks**: Daily checks send standard `If-None-Match: <ETag>` and `If-Modified-Since` headers. Unchanged feeds return `HTTP 304 Not Modified`, transferring 0 payload bytes and consuming 0 parse time.
+- **Fast Local Delta Merging**: When an upstream feed updates, `p-rox` performs high-speed set difference between the new file and previous cache, streaming only *net-new* proxy candidates through deduplication and SQLite ingestion in under 100 milliseconds.
+- **Non-Blocking Background Thread**: Background syncing runs concurrently in WAL mode without pausing test workers or interrupting forward proxy streams.
+- **Real-Time Telemetry & Manual Trigger**: Sync progress and countdowns are displayed in both `VIEW_MONITOR` and `VIEW_SERVER`. Pressing `u` at any time triggers an immediate check on demand.
+
 ---
 
 ## Installation
@@ -125,6 +132,8 @@ Options:
 - `--workers <int>`: Number of concurrent test workers (default: `25`).
 - `--keepalive <float>`: Heartbeat check interval in seconds for alive proxies (default: `180.0`).
 - `--timeout <float>`: Network connect and probe timeout in seconds (default: `6.0`).
+- `--sync-interval <int>`: Daily background feed check interval in seconds (default: `86400` / 24h, `0` to disable).
+- `--no-auto-sync`: Disable automatic background feed syncing.
 - `--db <path>`: Custom SQLite database path (default: `~/.p-rox/proxies.db`).
 
 If the database is empty on first run, `p-rox` automatically downloads and imports the initial feeds.
@@ -145,6 +154,7 @@ Options:
 While running with `--serve`, single keystrokes control the engine instantly without interrupting background workers:
 - **`1` - `0`**: Opens the dedicated **Country Selection Menu** for slots 1 through 10.
 - **`s`**: Toggles between the **Pool Monitor View** (sticky header with scrolling test output) and the **Gateway Server View** (live slot matrix).
+- **`u`**: Manually triggers an immediate background feed update check without waiting for the daily 24h timer.
 - **`+` / `=`**: Dynamically scales up the gateway by adding a new proxy slot and binding the next sequential port (e.g. opens `3040`).
 - **`-` / `_`**: Dynamically scales down the gateway by stopping and removing the highest numbered slot (minimum 1 slot maintained).
 - **`Ctrl+C`**: Cleanly shuts down all socket servers, drains completed work, and restores terminal scrolling margins.

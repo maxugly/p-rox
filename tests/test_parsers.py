@@ -143,3 +143,21 @@ def test_parse_json_flags_vakhov():
     assert proxies[0].host == "72.195.101.99"
     assert proxies[0].port == 4145
     assert proxies[0].country == "United States"
+
+
+def test_parse_file_delta(tmp_path):
+    from proxy_collector.parsers import parse_file_delta
+    from proxy_collector.models import Feed
+
+    prev_file = tmp_path / "feed.txt.prev"
+    prev_file.write_text("1.1.1.1:8080\n2.2.2.2:8080\n")
+
+    new_file = tmp_path / "feed.txt"
+    new_file.write_text("1.1.1.1:8080\n2.2.2.2:8080\n3.3.3.3:8080\n4.4.4.4:8080\n")
+
+    feed = Feed(url="https://example.com/feed.txt", source_name="Test", default_scheme="http")
+    delta_proxies = list(parse_file_delta(new_file, prev_path=prev_file, feed=feed))
+
+    assert len(delta_proxies) == 2
+    urls = {p.url for p in delta_proxies}
+    assert urls == {"http://3.3.3.3:8080", "http://4.4.4.4:8080"}

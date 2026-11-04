@@ -380,4 +380,50 @@ def test_render_country_menu():
     assert "Nav: [↑/↓/←/→] Move" in out
 
 
+def test_render_dashboard_and_header_with_sync_info():
+    import time
+    from proxy_collector.dashboard import TerminalDashboard, render_sticky_header, ANSI_REGEX
+
+    sync_checking = {
+        "status": "checking",
+        "feeds_checked": 24,
+        "feeds_total": 52,
+    }
+    sync_done = {
+        "status": "idle",
+        "last_sync_time": time.time() - 60,
+        "next_sync_time": time.time() + 86340,
+        "last_sync_result": "50 unchanged (304), 2 updated (+450 new)",
+    }
+
+    # Sticky Header - Checking
+    h_lines = render_sticky_header(
+        analytics={"total": 100, "alive": 5, "dead": 10},
+        sync_info=sync_checking,
+        width=80,
+    )
+    plain_h = "\n".join(ANSI_REGEX.sub("", l) for l in h_lines)
+    assert "Feed Sync: Checking feeds... (24/52)" in plain_h
+
+    # Sticky Header - Completed
+    h_lines_done = render_sticky_header(
+        analytics={"total": 100, "alive": 5, "dead": 10},
+        sync_info=sync_done,
+        width=80,
+    )
+    plain_h_done = "\n".join(ANSI_REGEX.sub("", l) for l in h_lines_done)
+    assert "Feed Sync: 50 unchanged (304), 2 updated (+450 new)" in plain_h_done
+    assert "Next in:" in plain_h_done
+
+    # Gateway Dashboard
+    gw_out = TerminalDashboard.render_gateway_dashboard(
+        slots=[],
+        sync_stats=sync_done,
+    )
+    assert "Feed Sync:" in gw_out
+    assert "50 unchanged (304), 2 updated (+450 new)" in gw_out
+    assert "[u] Update Feeds" in gw_out
+
+
+
 

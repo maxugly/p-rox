@@ -9,7 +9,7 @@ from typing import Any, Callable, Iterable, Iterator, List, Optional, Set
 from .deduplicator import Deduplicator
 from .fetcher import ProxyFetcher
 from .models import CollectionStats, Feed, FetchResult, Proxy
-from .parsers import parse_file
+from .parsers import parse_file, parse_file_delta
 from .sources import load_catalog
 
 logger = logging.getLogger("proxy_collector")
@@ -42,6 +42,7 @@ class ProxyCollector:
     def fetch(
         self,
         force: bool = False,
+        check_conditional: bool = False,
         feeds: Optional[List[Feed]] = None,
         on_progress: Optional[Callable[[FetchResult], None]] = None,
     ) -> List[FetchResult]:
@@ -50,6 +51,7 @@ class ProxyCollector:
         self.last_fetch_results = self.fetcher.fetch_all(
             target_feeds,
             force=force,
+            check_conditional=check_conditional,
             progress_callback=on_progress,
         )
         return self.last_fetch_results
@@ -58,13 +60,15 @@ class ProxyCollector:
         self,
         fetch: bool = False,
         force: bool = False,
+        check_conditional: bool = False,
         feeds: Optional[List[Feed]] = None,
+        only_delta: bool = False,
     ) -> Iterator[Proxy]:
         """Stream raw proxies from all configured feeds."""
         target_feeds = feeds if feeds is not None else self.catalog
 
         if fetch:
-            self.fetch(force=force, feeds=target_feeds)
+            self.fetch(force=force, check_conditional=check_conditional, feeds=target_feeds)
 
         # First iterate over known feed cache destinations
         processed_files: Set[Path] = set()
@@ -74,10 +78,19 @@ class ProxyCollector:
             cached_path = self.fetcher.get_cached_path(feed)
             if cached_path.is_file():
                 processed_files.add(cached_path.resolve())
-                yield from parse_file(cached_path, feed=feed)
+                if only_delta:
+                    prev_path = cached_path.with_suffix(cached_path.suffix + ".prev")
+                    yield from parse_file_delta(cached_path, prev_path=prev_path, feed=feed)
+                    if prev_path.is_file():
+                        try:
+                            prev_path.unlink()
+                        except OSError:
+                            pass
+                else:
+                    yield from parse_file(cached_path, feed=feed)
 
         # Also parse any additional files existing in cache_dir not mapped to a feed
-        if self.cache_dir.is_dir():
+        if not only_delta and self.cache_dir.is_dir():
             for p in sorted(self.cache_dir.iterdir()):
                 if p.is_file() and p.resolve() not in processed_files and not p.name.startswith("."):
                     if p.suffix in (".txt", ".json", ".csv"):
@@ -87,13 +100,21 @@ class ProxyCollector:
         self,
         fetch: bool = False,
         force: bool = False,
+        check_conditional: bool = False,
         protocols: Optional[Iterable[str]] = None,
         web_only: bool = False,
         feeds: Optional[List[Feed]] = None,
+        only_delta: bool = False,
     ) -> Iterator[Proxy]:
         """Stream deduplicated proxies matching protocol criteria."""
         dedup = Deduplicator(protocols=protocols, web_only=web_only)
-        raw_stream = self.stream_all_sources(fetch=fetch, force=force, feeds=feeds)
+        raw_stream = self.stream_all_sources(
+            fetch=fetch,
+            force=force,
+            check_conditional=check_conditional,
+            feeds=feeds,
+            only_delta=only_delta,
+        )
         yield from dedup.filter_and_dedup_stream(raw_stream)
 
     def collect(

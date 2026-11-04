@@ -181,6 +181,7 @@ def render_sticky_header(
     heartbeat_s: float = 180.0,
     width: Optional[int] = None,
     gateway_active: bool = False,
+    sync_info: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """Render the 6-line sticky status box for the top of the terminal."""
     if width is None:
@@ -224,6 +225,25 @@ def render_sticky_header(
             f"\033[1m{pct_str}\033[0m"
         )
 
+    # Feed Sync Telemetry
+    s_info = sync_info or analytics.get("sync_info")
+    sync_line = None
+    if s_info:
+        st = s_info.get("status", "idle")
+        if st == "checking":
+            chk = s_info.get("feeds_checked", 0)
+            tot = s_info.get("feeds_total", 52)
+            sync_line = f"Feed Sync: \033[1;33mChecking feeds... ({chk}/{tot})\033[0m"
+        elif s_info.get("last_sync_time", 0) > 0:
+            res = s_info.get("last_sync_result", "Up-to-date")
+            next_s = max(0.0, s_info.get("next_sync_time", 0) - time.time())
+            sync_line = f"Feed Sync: \033[1;92m{res}\033[0m │ Next in: \033[1m{format_duration(next_s)}\033[0m (u: Check now)"
+        elif s_info.get("status") == "failed":
+            res = s_info.get("last_sync_result", "Failed")
+            sync_line = f"Feed Sync: \033[1;91m{res}\033[0m (u: Retry now)"
+        else:
+            sync_line = "Feed Sync: \033[2mScheduled daily (press 'u' to check now)\033[0m"
+
     # Line 3: Latency & Lifetimes
     avg_ping = analytics.get("avg_ping", 0.0)
     stdev_ping = analytics.get("stdev_ping", 0.0)
@@ -259,6 +279,8 @@ def render_sticky_header(
     ]
     if geoip_line:
         header.append(_box_line(geoip_line, width))
+    if sync_line:
+        header.append(_box_line(sync_line, width))
     header.append(_box_line(line3, width))
     header.extend(country_lines)
     header.append(bottom_border)
@@ -345,6 +367,7 @@ class TerminalDashboard:
         pool_stats: Optional[Dict[str, int]] = None,
         width: Optional[int] = None,
         geoip_stats: Optional[Dict[str, Any]] = None,
+        sync_stats: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Render ANSI live dashboard for local gateway slots."""
         ports = [s.port for s in slots]
@@ -394,7 +417,23 @@ class TerminalDashboard:
             elif total > 0:
                 lines.append(f"GeoIP Coverage:     \033[92m100% mapped\033[0m ({resolved:,} candidates)")
 
-        lines.append("\033[2mSlot Menu: [1-0]  │  Toggle View: [s]  │  [+] Add Port  │  [-] Remove Port  │  [Ctrl+C] Stop\033[0m")
+        if sync_stats:
+            st = sync_stats.get("status", "idle")
+            if st == "checking":
+                chk = sync_stats.get("feeds_checked", 0)
+                tot = sync_stats.get("feeds_total", 52)
+                lines.append(f"Feed Sync:          \033[1;33mChecking feeds... ({chk}/{tot})\033[0m")
+            elif sync_stats.get("last_sync_time", 0) > 0:
+                res = sync_stats.get("last_sync_result", "Up-to-date")
+                next_s = max(0.0, sync_stats.get("next_sync_time", 0) - time.time())
+                lines.append(f"Feed Sync:          \033[1;92m{res}\033[0m │ Next daily check in \033[1m{format_duration(next_s)}\033[0m (u: Check now)")
+            elif sync_stats.get("status") == "failed":
+                res = sync_stats.get("last_sync_result", "Failed")
+                lines.append(f"Feed Sync:          \033[1;91m{res}\033[0m (u: Retry now)")
+            else:
+                lines.append("Feed Sync:          \033[2mScheduled daily (press 'u' to check now)\033[0m")
+
+        lines.append("\033[2mSlot Menu: [1-0]  │  Toggle View: [s]  │  [u] Update Feeds  │  [+] Add Port  │  [-] Remove Port  │  [Ctrl+C] Stop\033[0m")
         lines.append("")
         header = (
             f"\033[1m{'Slot':<5} {'Port':<6} {'Status':<9} {'Location':<16} "

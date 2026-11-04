@@ -340,5 +340,120 @@ def test_run_continuous_worker_priority_country(tmp_path):
     assert results[0] == p_us.url
 
 
+def test_sync_candidates_all_unchanged_304(tmp_path):
+    from proxy_collector.models import Feed, FetchResult
+
+    db = ProxyDB(db_path=tmp_path / "unchanged.db")
+    p1 = Proxy(scheme="http", host="1.1.1.1", port=8080)
+    db.upsert_batch([p1])
+
+    f1 = Feed(url="https://example.com/f1.txt", source_name="F1")
+    fetch_res = [
+        FetchResult(feed=f1, status="not_modified", bytes_downloaded=0),
+    ]
+
+    with patch("proxy_collector.operations.ProxyCollector") as mock_col_cls:
+        mock_col = MagicMock()
+        mock_col.fetch.return_value = fetch_res
+        mock_col_cls.return_value = mock_col
+
+        msgs = []
+        res = ops.sync_candidates(
+            db=db,
+            check_conditional=True,
+            only_updated=True,
+            on_status_msg=lambda m: msgs.append(m),
+        )
+
+        assert res["feeds_not_modified"] == 1
+        assert res["feeds_downloaded"] == 0
+        assert res["newly_added"] == 0
+        assert any("up-to-date" in m for m in msgs)
+        # Verified collect_stream was NOT called because all feeds were 304!
+        assert not mock_col.collect_stream.called
+
+
+def test_sync_candidates_only_updated_delta(tmp_path):
+    from proxy_collector.models import Feed, FetchResult
+
+    db = ProxyDB(db_path=tmp_path / "delta.db")
+    p1 = Proxy(scheme="http", host="1.1.1.1", port=8080)
+    db.upsert_batch([p1])
+
+    f1 = Feed(url="https://example.com/f1.txt", source_name="F1")
+    f2 = Feed(url="https://example.com/f2.txt", source_name="F2")
+    fetch_res = [
+        FetchResult(feed=f1, status="not_modified", bytes_downloaded=0),
+        FetchResult(feed=f2, status="downloaded", bytes_downloaded=500),
+    ]
+
+    p_new = Proxy(scheme="http", host="2.2.2.2", port=8080)
+
+    with patch("proxy_collector.operations.ProxyCollector") as mock_col_cls:
+        mock_col = MagicMock()
+        mock_col.fetch.return_value = fetch_res
+        mock_col.collect_stream.return_value = iter([p_new])
+        mock_col_cls.return_value = mock_col
+
+        msgs = []
+        res = ops.sync_candidates(
+            db=db,
+            check_conditional=True,
+            only_updated=True,
+            on_status_msg=lambda m: msgs.append(m),
+        )
+
+        assert res["feeds_downloaded"] == 1
+        assert res["feeds_not_modified"] == 1
+        assert res["newly_added"] == 1
+        # Verified collect_stream was called ONLY with downloaded feed f2 and only_delta=True
+        mock_col.collect_stream.assert_called_once_with(web_only=True, feeds=[f2], only_delta=True)
+
+
+def test_background_sync_worker_and_trigger(tmp_path):
+    import threading
+    import time
+
+    db = ProxyDB(db_path=tmp_path / "bg_sync.db")
+    sync_state = {}
+    stop_event = threading.Event()
+    trigger_event = threading.Event()
+
+    fake_res = {
+        "feeds_downloaded": 1,
+        "feeds_not_modified": 5,
+        "feeds_cached": 0,
+        "feeds_failed": 0,
+        "newly_added": 42,
+    }
+
+    with patch("proxy_collector.operations.sync_candidates", return_value=fake_res) as mock_sync:
+        t = ops.start_background_sync_thread(
+            db=db,
+            sync_state=sync_state,
+            stop_event=stop_event,
+            trigger_event=trigger_event,
+            interval_seconds=86400.0,
+        )
+
+        # Trigger immediate sync
+        trigger_event.set()
+        time_limit = time.time() + 2.0
+        while time.time() < time_limit:
+            if sync_state.get("last_sync_time", 0) > 0:
+                break
+            time.sleep(0.02)
+
+        stop_event.set()
+        t.join(timeout=2.0)
+
+        assert not t.is_alive()
+        assert sync_state["status"] == "idle"
+        assert sync_state["last_sync_time"] > 0
+        assert "5 unchanged (304), 1 updated (+42 new)" in sync_state["last_sync_result"]
+        assert sync_state["new_candidates_added"] == 42
+
+
+
 
 

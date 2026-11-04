@@ -26,6 +26,7 @@ from .models import STANDARD_SCHEMES, Proxy
 from .operations import (
     run_continuous_worker,
     start_background_geoip_thread,
+    start_background_sync_thread,
     sync_candidates,
     test_candidates,
 )
@@ -125,6 +126,33 @@ def cmd_run(args):
 
     terminal = StickyTerminal(header_lines=6)
 
+    # Daily background feed syncer
+    sync_interval = getattr(args, "sync_interval", 86400)
+    no_auto_sync = getattr(args, "no_auto_sync", False)
+    sync_state: Dict[str, Any] = {
+        "status": "idle",
+        "feeds_checked": 0,
+        "feeds_total": 52,
+        "last_sync_time": 0.0,
+        "next_sync_time": time.time() + (sync_interval if sync_interval > 0 else 86400),
+        "last_sync_result": "Scheduled daily",
+    }
+    trigger_sync_event = threading.Event()
+
+    def _on_sync_msg(msg: str):
+        terminal.print_log(f"\033[36m[SYNC]\033[0m {msg}")
+
+    if not no_auto_sync and sync_interval > 0:
+        start_background_sync_thread(
+            db=db,
+            sync_state=sync_state,
+            stop_event=stop_event,
+            trigger_event=trigger_sync_event,
+            interval_seconds=float(sync_interval),
+            resolve_geoip=not no_geoip,
+            on_status_msg=_on_sync_msg,
+        )
+
     # View Mode Toggle: 's' key toggles between Pool Monitor and Gateway Server views
     VIEW_MONITOR = "monitor"
     VIEW_SERVER = "server"
@@ -160,6 +188,7 @@ def cmd_run(args):
             workers=workers,
             heartbeat_s=keepalive,
             gateway_active=serve_enabled,
+            sync_info=sync_state,
         )
         terminal.update_header(cur_header)
 
@@ -184,6 +213,7 @@ def cmd_run(args):
             target_site=server.target_site,
             pool_stats=pool_stats,
             geoip_stats=geoip_info,
+            sync_stats=sync_state,
         )
         sys.stdout.write("\033[H" + dashboard_str)
         sys.stdout.flush()
@@ -393,6 +423,9 @@ def cmd_run(args):
                             handle_add_slot()
                         elif ch in ("-", "_"):
                             handle_remove_slot()
+                        elif ch in ("u", "U"):
+                            trigger_sync_event.set()
+                            terminal.print_log("\033[36m[SYNC]\033[0m Feed update check triggered (press 'u')...")
                         elif ch in ("1", "2", "3", "4", "5", "6", "7", "8", "9"):
                             slot_idx = int(ch) - 1
                             open_slot_menu(slot_idx)
@@ -624,9 +657,10 @@ def cmd_sync(args):
 
     def on_feed(status, name, nbytes, err):
         sym = {
-            "downloaded": "✔ [downloaded]",
-            "cached": "★ [cached]    ",
-            "failed": "✖ [failed]    ",
+            "downloaded": "✔ [downloaded] ",
+            "not_modified": "★ [304 not mod]",
+            "cached": "★ [cached]     ",
+            "failed": "✖ [failed]     ",
         }.get(status, status)
         b_str = f"{nbytes / 1024 / 1024:.2f} MB" if nbytes else ""
         err_str = f"({err})" if err else ""
@@ -641,9 +675,12 @@ def cmd_sync(args):
     print("Step 1/2: Fetching 52 public proxy feeds...")
     sources_p = Path(args.sources).resolve() if getattr(args, "sources", None) else None
     resolve_geoip = not getattr(args, "no_geoip", False)
+    force_sync = getattr(args, "force", False)
     res = sync_candidates(
         db=db,
-        force=getattr(args, "force", False),
+        force=force_sync,
+        check_conditional=not force_sync,
+        only_updated=not force_sync,
         sources_dir=sources_p,
         concurrency=getattr(args, "concurrency", 10),
         resolve_geoip=resolve_geoip,
@@ -680,8 +717,9 @@ def cmd_sync(args):
             )
             print()
 
+    not_mod = res.get("feeds_not_modified", 0)
     print("-" * 70)
-    print(f"  Feeds:              {res['feeds_downloaded']} downloaded, {res['feeds_cached']} cached, {res['feeds_failed']} failed")
+    print(f"  Feeds:              {res['feeds_downloaded']} downloaded, {not_mod} unchanged (304), {res['feeds_cached']} cached, {res['feeds_failed']} failed")
     print(f"  Unique Ingested:    {res['newly_added']:,} newly added ({res['total_parsed']:,} parsed)")
     print(f"  Database Total:     {res['total_in_db']:,} candidates ({res['untested_in_db']:,} untested)")
     final_stats = db.get_stats()
@@ -978,6 +1016,8 @@ def main():
     parser.add_argument("--base-port", type=int, default=3030, help="Starting base port for gateway slots (default: 3030)")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Gateway bind host (default: 127.0.0.1)")
     parser.add_argument("--site", type=str, default=None, help="Target qualification site for gateway proxies")
+    parser.add_argument("--sync-interval", type=int, default=86400, help="Background feed check interval in seconds (default: 86400 / 24h, 0 to disable)")
+    parser.add_argument("--no-auto-sync", action="store_true", help="Disable background automatic feed updates")
     parser.set_defaults(func=cmd_run)
 
     subparsers = parser.add_subparsers(
@@ -1000,6 +1040,8 @@ def main():
     p_run.add_argument("--base-port", type=int, default=3030, help="Starting base port for gateway slots (default: 3030)")
     p_run.add_argument("--host", type=str, default="127.0.0.1", help="Gateway bind host (default: 127.0.0.1)")
     p_run.add_argument("--site", type=str, default=None, help="Target qualification site for gateway proxies")
+    p_run.add_argument("--sync-interval", type=int, default=86400, help="Background feed check interval in seconds (default: 86400 / 24h, 0 to disable)")
+    p_run.add_argument("--no-auto-sync", action="store_true", help="Disable background automatic feed updates")
     p_run.set_defaults(func=cmd_run)
 
     # 2. sync (aliases: fetch, update)

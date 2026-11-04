@@ -108,6 +108,13 @@ Do not bypass or modify the exponential circuit breaker quarantine discipline in
 - When locked to a country, the slot immediately drops its current proxy. If no alive proxy is ready, it enters `waiting` (orange `\033[38;5;208m`, `warming (XX)`).
 - The continuous testing conveyor belt prioritizes testing up to 10 candidates for waiting countries before resuming general round-robin testing.
 
+### 11. Daily Background Feed Sync, HTTP 304 Caching, & Delta Ingestion
+- Upstream feed updates are checked automatically on a 24-hour cadence in the background (`p-rox-feed-syncer`) without blocking the testing conveyor or forward gateway slots.
+- Uses HTTP conditional caching (`ETag` / `If-None-Match` and `Last-Modified` / `If-Modified-Since`). Unchanged feeds return `HTTP 304 Not Modified`, incurring 0 body bytes and 0 parse overhead.
+- When an updated feed is downloaded, fast local set difference (`parse_file_delta`) streams only newly added proxy candidates directly into SQLite `INSERT OR IGNORE` (<100ms).
+- Live sync telemetry is truthfully displayed on both `VIEW_MONITOR` (sticky header) and `VIEW_SERVER` (slot dashboard).
+- Users can manually trigger an immediate update check at any time by pressing `'u'` / `'U'` in `VIEW_SERVER` or `VIEW_MONITOR`.
+
 ---
 
 ## 4. Codebase Directory Map
@@ -136,7 +143,7 @@ p-rox/
 │   ├── routing.py              # Leased RoutedSession (requests.Session subclass)
 │   ├── service.py              # Coordination layer with fcntl.flock concurrency locks
 │   └── sources.py              # Catalog of 52 verified feeds across 9 providers
-├── tests/                      # Fast offline test suite (97 tests, <1s)
+├── tests/                      # Fast offline test suite (105 tests, <1s)
 ├── AGENTS.md                   # This file (Agent briefing & architectural rules)
 ├── pyproject.toml              # Package configuration & entry points
 └── README.md                   # Technical reference manual & documentation

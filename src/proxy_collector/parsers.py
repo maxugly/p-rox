@@ -283,3 +283,46 @@ def parse_file(
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
             yield from parse_line(line, default_scheme=scheme, source_name=src_name)
+
+
+def parse_file_delta(
+    file_path: Path | str,
+    prev_path: Optional[Path | str] = None,
+    feed: Optional[Feed] = None,
+    default_scheme: Optional[str] = None,
+    source_name: Optional[str] = None,
+) -> Iterator[Proxy]:
+    """Parse only newly added proxies by comparing file_path against prev_path."""
+    new_p = Path(file_path)
+    if not new_p.is_file():
+        return
+
+    prev_p = Path(prev_path) if prev_path else None
+    if not prev_p or not prev_p.is_file():
+        yield from parse_file(new_p, feed=feed, default_scheme=default_scheme, source_name=source_name)
+        return
+
+    scheme = default_scheme or (feed.default_scheme if feed else None)
+    src_name = source_name or (feed.source_name if feed else None)
+    is_json = new_p.suffix.lower() == ".json" or (feed and "json" in feed.format)
+
+    if is_json:
+        # JSON format requires full parse; deduplicator / DB ignores existing
+        yield from parse_file(new_p, feed=feed, default_scheme=default_scheme, source_name=source_name)
+        return
+
+    try:
+        prev_lines = set()
+        with open(prev_p, "r", encoding="utf-8", errors="replace") as pf:
+            for line in pf:
+                s = line.strip()
+                if s and not s.startswith(("#", "//")):
+                    prev_lines.add(s)
+
+        with open(new_p, "r", encoding="utf-8", errors="replace") as nf:
+            for line in nf:
+                s = line.strip()
+                if s and not s.startswith(("#", "//")) and s not in prev_lines:
+                    yield from parse_line(line, default_scheme=scheme, source_name=src_name)
+    except Exception:
+        yield from parse_file(new_p, feed=feed, default_scheme=default_scheme, source_name=source_name)
