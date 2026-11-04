@@ -319,7 +319,7 @@ class SecurityMetrics:
 
     tls_tampering_detected: bool = False
     cert_issuer: Optional[str] = None
-    anonymity: str = "unknown"  # "elite", "anonymous", "transparent", "unknown"
+    anonymity: str = "unknown"  # "elite", "anonymous", "slow", "transparent", "tampered", "unknown"
     leaked_ip: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:

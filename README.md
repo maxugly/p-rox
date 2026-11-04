@@ -37,7 +37,7 @@ The database tracks:
 - **Proxy Identity**: Scheme, host, port, credentials, and canonical URL.
 - **Verification Metrics**: TCP handshake latency (round-trip time), HTTP Time-To-First-Byte (TTFB), and true egress IP.
 - **Geolocation**: Country code, city, and ASN (resolved offline using local MMDB databases).
-- **Security & Anonymity**: Anonymity tier (`elite`, `anonymous`, `transparent`) and TLS certificate tampering detection.
+- **Security & Anonymity**: Anonymity tier (`elite`, `anonymous`, `slow`, `transparent`, `tampered`) and TLS certificate tampering detection.
 - **Lifecycle**: `first_seen_alive` timestamp, `last_checked_at`, and cumulative failure counts.
 
 **No-Deletion Policy**: Dead proxies are never silently deleted. When a proxy fails a test, its status is marked `dead`, its failure counter increments, and it is pushed to the back of the queue. If it continues to fail after 5 attempts, it is backed off for 7 days.
@@ -97,6 +97,15 @@ To keep candidate pools consistently fresh without restarting or degrading perfo
 - **Non-Blocking Background Thread**: Background syncing runs concurrently in WAL mode without pausing test workers or interrupting forward proxy streams.
 - **Real-Time Telemetry & Manual Trigger**: Sync progress and countdowns are displayed in both `VIEW_MONITOR` and `VIEW_SERVER`. Pressing `u` at any time triggers an immediate check on demand.
 
+### 8. Multi-Factor Composite Anonymity Qualification
+Public proxy lists often label over 95% of entries as "elite" simply because modern SOCKS or Squid proxies strip the `Via` header. `p-rox` enforces strict, multi-factor criteria:
+- **`ELITE`**: Clean headers (no `Via`, `X-Forwarded-For`, etc.) + Verified clean TLS (no MitM) + **TCP handshake ≤ 300ms** + **HTTP TTFB ≤ 1,500ms**.
+- **`ANON` / `ANONYMOUS`**: Clean headers and clean TLS with moderate latency (TCP ≤ 800ms, TTFB ≤ 4,000ms), OR valid proxy indicator headers without leaking client IP.
+- **`SLOW`**: Clean headers and clean TLS, but high latency (TCP > 800ms or TTFB > 4,000ms).
+- **`TRANS` / `TRANSPARENT`**: Leaks client IP address in `origin` or headers (`X-Forwarded-For`, `Client-IP`, `X-Real-IP`, etc.).
+- **`TAMPER` / `TAMPERED`**: Intercepts or tampers with TLS connections (invalid or self-signed SSL certificates).
+- **Host IP Discovery**: Auto-discovers local machine public IP once on startup via fast public echo endpoints for true leak verification. Overridable via `--my-ip <ip>` or disabled with `--no-ip-discovery`.
+
 ---
 
 ## Installation
@@ -134,6 +143,8 @@ Options:
 - `--timeout <float>`: Network connect and probe timeout in seconds (default: `6.0`).
 - `--sync-interval <int>`: Daily background feed check interval in seconds (default: `86400` / 24h, `0` to disable).
 - `--no-auto-sync`: Disable automatic background feed syncing.
+- `--my-ip <ip>`: Explicit host public IP address for client IP leak detection.
+- `--no-ip-discovery`: Disable automatic discovery of local public IP.
 - `--db <path>`: Custom SQLite database path (default: `~/.p-rox/proxies.db`).
 
 If the database is empty on first run, `p-rox` automatically downloads and imports the initial feeds.

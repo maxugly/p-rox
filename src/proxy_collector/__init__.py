@@ -22,7 +22,7 @@ from .routing import RoutedSession
 from .service import ProxyService
 from .gateway import GatewayServer, ProxySlot, SlotStats
 from .geoip import GeoIPResolver, download_dbip_lite, download_maxmind_geolite2
-from .profiler import ProxyProfiler
+from .profiler import ProxyProfiler, discover_local_public_ip
 from .dashboard import TerminalDashboard
 
 __all__ = [
@@ -53,6 +53,7 @@ __all__ = [
     "download_dbip_lite",
     "download_maxmind_geolite2",
     "ProxyProfiler",
+    "discover_local_public_ip",
     "TerminalDashboard",
     "site_key",
 ]

@@ -33,6 +33,62 @@ PROXY_INDICATOR_HEADERS = [
 DEFAULT_ECHO_HTTP = "http://httpbin.org/get"
 DEFAULT_ECHO_HTTPS = "https://cloudflare.com/cdn-cgi/trace"
 
+_CACHED_LOCAL_IP: Optional[str] = None
+
+
+def discover_local_public_ip(timeout: float = 2.0, force: bool = False) -> Optional[str]:
+    """Auto-discover the host machine's public egress IP address.
+
+    Tries fast public echo endpoints in sequence. Caches the result in-memory
+    so subsequent calls incur 0 network overhead.
+    """
+    global _CACHED_LOCAL_IP
+    if _CACHED_LOCAL_IP is not None and not force:
+        return _CACHED_LOCAL_IP
+
+    endpoints = [
+        "https://api.ipify.org",
+        "https://cloudflare.com/cdn-cgi/trace",
+        "https://icanhazip.com",
+        "http://httpbin.org/ip",
+    ]
+    for url in endpoints:
+        try:
+            resp = requests.get(url, timeout=timeout, headers={"User-Agent": "p-rox/0.0.1"})
+            if resp.status_code == 200:
+                text = resp.text.strip()
+                if "ip=" in text:
+                    for line in text.splitlines():
+                        if line.startswith("ip="):
+                            cand = line.split("=", 1)[1].strip()
+                            if cand and ("." in cand or ":" in cand):
+                                _CACHED_LOCAL_IP = cand
+                                return _CACHED_LOCAL_IP
+                elif "{" in text:
+                    try:
+                        data = resp.json()
+                        cand = (data.get("origin") or data.get("ip") or "").split(",")[0].strip()
+                        if cand and ("." in cand or ":" in cand):
+                            _CACHED_LOCAL_IP = cand
+                            return _CACHED_LOCAL_IP
+                    except Exception:
+                        pass
+                else:
+                    cand = text.split("\n")[0].strip()
+                    if cand and ("." in cand or ":" in cand):
+                        _CACHED_LOCAL_IP = cand
+                        return _CACHED_LOCAL_IP
+        except Exception:
+            continue
+
+    return None
+
+
+def reset_cached_local_ip() -> None:
+    """Reset cached local IP (primarily for unit test isolation)."""
+    global _CACHED_LOCAL_IP
+    _CACHED_LOCAL_IP = None
+
 
 class ProxyProfiler:
     """Profiles candidate proxies: latency, true egress identity, anonymity level, and security integrity."""
@@ -42,9 +98,15 @@ class ProxyProfiler:
         geoip_resolver: Optional[GeoIPResolver] = None,
         my_ip: Optional[str] = None,
         timeout: float = 8.0,
+        auto_discover_ip: bool = False,
     ):
         self.geoip = geoip_resolver
-        self.my_ip = my_ip
+        if my_ip is not None:
+            self.my_ip = my_ip
+        elif auto_discover_ip:
+            self.my_ip = discover_local_public_ip(timeout=min(2.0, timeout))
+        else:
+            self.my_ip = None
         self.timeout = timeout
 
     @staticmethod
@@ -176,11 +238,59 @@ class ProxyProfiler:
                 )
                 if resp2.status_code == 200:
                     text = resp2.text.strip()
-                    if text and "." in text:
+                    if text and ("." in text or ":" in text):
+                        if self.my_ip and self.my_ip in text:
+                            return "transparent", text, self.my_ip
                         return "unknown", text, None
             except Exception:
                 pass
             return "unknown", None, None
+
+    @staticmethod
+    def classify_anonymity_tier(
+        base_anon: str,
+        tcp_handshake_ms: float,
+        http_ttfb_ms: float,
+        tls_tampered: bool = False,
+        leaked_ip: Optional[str] = None,
+    ) -> str:
+        """Classify multi-factor composite anonymity tier based on headers, TLS integrity, and latency.
+
+        Tiers:
+          - 'tampered': TLS interception/MitM detected (SSL cert spoofed or invalid).
+          - 'transparent': Client IP leaked in headers or echo origin.
+          - 'slow': Clean or anonymous headers, but high latency (TCP > 800ms or TTFB > 4000ms).
+          - 'anonymous': Valid proxy headers or moderate latency (TCP <= 800ms, TTFB <= 4000ms).
+          - 'elite': Clean headers, no leak, clean TLS, TCP <= 300ms, and HTTP TTFB <= 1500ms.
+          - 'unknown': Unreachable or inconclusive echo response.
+        """
+        if tls_tampered:
+            return "tampered"
+
+        if leaked_ip or base_anon == "transparent":
+            return "transparent"
+
+        if tcp_handshake_ms == float("inf"):
+            return "unknown"
+
+        if base_anon == "unknown":
+            if http_ttfb_ms == float("inf"):
+                return "unknown"
+            return "unknown"
+
+        # Check for high latency
+        if tcp_handshake_ms > 800.0 or http_ttfb_ms > 4000.0:
+            return "slow"
+
+        # If proxy indicator headers were present, it cannot be elite
+        if base_anon == "anonymous":
+            return "anonymous"
+
+        # Clean headers & clean TLS: check if latency meets elite criteria
+        if tcp_handshake_ms <= 300.0 and http_ttfb_ms <= 1500.0:
+            return "elite"
+
+        return "anonymous"
 
     def profile(self, proxy: Proxy) -> ProxyProfile:
         """Run complete profiling pipeline across a proxy candidate."""
@@ -198,8 +308,8 @@ class ProxyProfiler:
             )
             return profile
 
-        # 2. Anonymity & Egress Detection
-        anon_level, egress_ip, leaked_ip = self.determine_anonymity(proxy, timeout=self.timeout)
+        # 2. Base Anonymity & Egress Detection
+        base_anon, egress_ip, leaked_ip = self.determine_anonymity(proxy, timeout=self.timeout)
         profile.egress_ip = egress_ip or proxy.host
 
         # 3. HTTP TTFB Latency
@@ -212,14 +322,24 @@ class ProxyProfiler:
 
         # 4. TLS Tampering Integrity
         is_tampered, issuer = self.check_tls_integrity(proxy, timeout=self.timeout)
-        profile.security = SecurityMetrics(
-            tls_tampering_detected=is_tampered,
-            cert_issuer=issuer,
-            anonymity=anon_level,
+
+        # 5. Composite Anonymity Tier Classification
+        final_anon = self.classify_anonymity_tier(
+            base_anon=base_anon,
+            tcp_handshake_ms=tcp_ms,
+            http_ttfb_ms=ttfb_ms,
+            tls_tampered=is_tampered,
             leaked_ip=leaked_ip,
         )
 
-        # 5. GeoIP Resolution (lookup true egress IP, fallback to entry host)
+        profile.security = SecurityMetrics(
+            tls_tampering_detected=is_tampered,
+            cert_issuer=issuer,
+            anonymity=final_anon,
+            leaked_ip=leaked_ip,
+        )
+
+        # 6. GeoIP Resolution (lookup true egress IP, fallback to entry host)
         lookup_ip = profile.egress_ip or proxy.host
         if self.geoip:
             profile.geo = self.geoip.lookup(lookup_ip)
@@ -229,8 +349,18 @@ class ProxyProfiler:
         # Update initial qualification tier
         if tcp_ms != float("inf") and egress_ip:
             profile.tier = 1  # Route-qualified
-            if not is_tampered and anon_level in {"elite", "anonymous"}:
-                profile.last_reason = "L1 route verified, TLS secure"
+            if not is_tampered and final_anon == "elite":
+                profile.last_reason = "L1 route verified, TLS secure, elite low latency"
+            elif not is_tampered and final_anon == "anonymous":
+                profile.last_reason = "L1 route verified, TLS secure, anonymous"
+            elif final_anon == "slow":
+                profile.last_reason = "L1 route verified, high latency"
+            elif final_anon == "transparent":
+                profile.last_reason = "L1 route verified (client IP leaked)"
+            elif is_tampered or final_anon == "tampered":
+                profile.last_reason = "L1 route verified (TLS tampering detected)"
+            else:
+                profile.last_reason = "L1 route verified"
         else:
             profile.last_reason = "Unreachable or timeout"
 

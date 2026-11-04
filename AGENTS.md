@@ -115,6 +115,14 @@ Do not bypass or modify the exponential circuit breaker quarantine discipline in
 - Live sync telemetry is truthfully displayed on both `VIEW_MONITOR` (sticky header) and `VIEW_SERVER` (slot dashboard).
 - Users can manually trigger an immediate update check at any time by pressing `'u'` / `'U'` in `VIEW_SERVER` or `VIEW_MONITOR`.
 
+### 12. Multi-Factor Composite Anonymity & Elite Qualification Tiering
+- Elite anonymity is strictly reserved for high-performance, tamper-free proxies: Clean headers (no `Via`, `X-Forwarded-For`, etc.) + Verified clean TLS (no MitM) + **TCP handshake ≤ 300ms** + **HTTP TTFB ≤ 1,500ms**.
+- Proxies with clean headers but moderate latency (TCP ≤ 800ms, TTFB ≤ 4,000ms) or legitimate proxy headers without leaking client IP are classified as **`ANONYMOUS`**.
+- Clean proxies with high latency (TCP > 800ms or TTFB > 4,000ms) are demoted to **`SLOW`**.
+- Any proxy leaking the client IP (in `origin`, `X-Forwarded-For`, etc.) is flagged as **`TRANSPARENT`**.
+- Any proxy that intercepts or tampers with TLS certificates (invalid or self-signed certs) is immediately flagged as **`TAMPERED`**.
+- The host public IP is auto-discovered once on engine startup (via fast public echo endpoints) for client IP leak verification, and can be overridden with `--my-ip` or disabled with `--no-ip-discovery`.
+
 ---
 
 ## 4. Codebase Directory Map

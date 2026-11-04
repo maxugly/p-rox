@@ -6,8 +6,13 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
+from proxy_collector.dashboard import format_anonymity_badge
 from proxy_collector.models import Proxy
-from proxy_collector.profiler import ProxyProfiler
+from proxy_collector.profiler import (
+    ProxyProfiler,
+    discover_local_public_ip,
+    reset_cached_local_ip,
+)
 
 
 def test_measure_tcp_handshake():
@@ -177,5 +182,157 @@ def test_cmd_profile_cli(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Testing proxy http://1.2.3.4:8080" in out
     assert "1.2.3.4" in out
+
+
+def test_classify_anonymity_tier_matrix():
+    # 1. Elite: clean headers, clean TLS, TCP <= 300ms, TTFB <= 1500ms
+    assert ProxyProfiler.classify_anonymity_tier("elite", tcp_handshake_ms=150.0, http_ttfb_ms=600.0) == "elite"
+    assert ProxyProfiler.classify_anonymity_tier("elite", tcp_handshake_ms=300.0, http_ttfb_ms=1500.0) == "elite"
+
+    # 2. Anonymous: clean headers, but moderate latency (TCP <= 800ms, TTFB <= 4000ms)
+    assert ProxyProfiler.classify_anonymity_tier("elite", tcp_handshake_ms=450.0, http_ttfb_ms=600.0) == "anonymous"
+    assert ProxyProfiler.classify_anonymity_tier("elite", tcp_handshake_ms=150.0, http_ttfb_ms=2000.0) == "anonymous"
+    assert ProxyProfiler.classify_anonymity_tier("elite", tcp_handshake_ms=800.0, http_ttfb_ms=4000.0) == "anonymous"
+
+    # 3. Anonymous: proxy headers present (e.g. Via), fast or moderate latency
+    assert ProxyProfiler.classify_anonymity_tier("anonymous", tcp_handshake_ms=50.0, http_ttfb_ms=200.0) == "anonymous"
+    assert ProxyProfiler.classify_anonymity_tier("anonymous", tcp_handshake_ms=750.0, http_ttfb_ms=3500.0) == "anonymous"
+
+    # 4. Slow: clean headers or anonymous headers, but high latency (TCP > 800ms or TTFB > 4000ms)
+    assert ProxyProfiler.classify_anonymity_tier("elite", tcp_handshake_ms=850.0, http_ttfb_ms=500.0) == "slow"
+    assert ProxyProfiler.classify_anonymity_tier("elite", tcp_handshake_ms=200.0, http_ttfb_ms=4200.0) == "slow"
+    assert ProxyProfiler.classify_anonymity_tier("anonymous", tcp_handshake_ms=900.0, http_ttfb_ms=500.0) == "slow"
+    assert ProxyProfiler.classify_anonymity_tier("anonymous", tcp_handshake_ms=100.0, http_ttfb_ms=5000.0) == "slow"
+
+    # 5. Transparent: leaked client IP or transparent base status
+    assert (
+        ProxyProfiler.classify_anonymity_tier(
+            "elite",
+            tcp_handshake_ms=50.0,
+            http_ttfb_ms=100.0,
+            leaked_ip="203.0.113.1",
+        )
+        == "transparent"
+    )
+    assert (
+        ProxyProfiler.classify_anonymity_tier(
+            "transparent",
+            tcp_handshake_ms=50.0,
+            http_ttfb_ms=100.0,
+        )
+        == "transparent"
+    )
+
+    # 6. Tampered: TLS MitM interception detected (takes precedence over latency)
+    assert (
+        ProxyProfiler.classify_anonymity_tier(
+            "elite",
+            tcp_handshake_ms=20.0,
+            http_ttfb_ms=50.0,
+            tls_tampered=True,
+        )
+        == "tampered"
+    )
+
+    # 7. Unknown / Unreachable
+    assert ProxyProfiler.classify_anonymity_tier("elite", tcp_handshake_ms=float("inf"), http_ttfb_ms=float("inf")) == "unknown"
+    assert ProxyProfiler.classify_anonymity_tier("unknown", tcp_handshake_ms=100.0, http_ttfb_ms=float("inf")) == "unknown"
+
+
+def test_profiler_profile_latency_demotion():
+    profiler = ProxyProfiler()
+    p = Proxy(scheme="http", host="1.2.3.4", port=8080)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"content-type": "application/json"}
+    mock_resp.json.return_value = {"origin": "185.220.101.4", "headers": {}}
+
+    # Scenario A: Moderate TCP (400ms) -> classified as anonymous despite clean headers
+    with patch("requests.get", return_value=mock_resp), patch.object(
+        ProxyProfiler, "measure_tcp_handshake", return_value=400.0
+    ), patch.object(
+        ProxyProfiler, "measure_http_ttfb", return_value=(200.0, "ok", {})
+    ), patch.object(
+        ProxyProfiler, "check_tls_integrity", return_value=(False, "Valid CA")
+    ):
+        profile = profiler.profile(p)
+        assert profile.security.anonymity == "anonymous"
+
+    # Scenario B: High TTFB (4500ms) -> classified as slow
+    with patch("requests.get", return_value=mock_resp), patch.object(
+        ProxyProfiler, "measure_tcp_handshake", return_value=100.0
+    ), patch.object(
+        ProxyProfiler, "measure_http_ttfb", return_value=(4500.0, "ok", {})
+    ), patch.object(
+        ProxyProfiler, "check_tls_integrity", return_value=(False, "Valid CA")
+    ):
+        profile = profiler.profile(p)
+        assert profile.security.anonymity == "slow"
+
+
+def test_discover_local_public_ip_sources():
+    reset_cached_local_ip()
+
+    # 1. Plain text response (e.g. api.ipify.org)
+    mock_resp1 = MagicMock()
+    mock_resp1.status_code = 200
+    mock_resp1.text = "198.51.100.22\n"
+
+    with patch("requests.get", return_value=mock_resp1):
+        ip = discover_local_public_ip(timeout=1.0, force=True)
+        assert ip == "198.51.100.22"
+
+    # 2. Cloudflare trace format (ip=...)
+    reset_cached_local_ip()
+    mock_resp2 = MagicMock()
+    mock_resp2.status_code = 200
+    mock_resp2.text = "fl=123\nip=203.0.113.99\nts=123456\n"
+
+    with patch("requests.get", return_value=mock_resp2):
+        ip = discover_local_public_ip(timeout=1.0, force=True)
+        assert ip == "203.0.113.99"
+
+    # 3. JSON response format ({"origin": "..."})
+    reset_cached_local_ip()
+    mock_resp3 = MagicMock()
+    mock_resp3.status_code = 200
+    mock_resp3.text = '{"origin": "192.0.2.77"}'
+    mock_resp3.json.return_value = {"origin": "192.0.2.77"}
+
+    with patch("requests.get", return_value=mock_resp3):
+        ip = discover_local_public_ip(timeout=1.0, force=True)
+        assert ip == "192.0.2.77"
+
+    # 4. Failure fallback returns None safely
+    reset_cached_local_ip()
+    with patch("requests.get", side_effect=Exception("Network down")):
+        ip = discover_local_public_ip(timeout=1.0, force=True)
+        assert ip is None
+
+    reset_cached_local_ip()
+
+
+def test_format_anonymity_badge():
+    b_elite = format_anonymity_badge("elite")
+    assert "ELITE" in b_elite
+    assert "\033[1;92m" in b_elite
+
+    b_anon = format_anonymity_badge("anonymous")
+    assert "ANON" in b_anon
+    assert "\033[93m" in b_anon
+
+    b_slow = format_anonymity_badge("slow")
+    assert "SLOW" in b_slow
+    assert "\033[35m" in b_slow
+
+    b_trans = format_anonymity_badge("transparent")
+    assert "TRANS" in b_trans
+    assert "\033[91m" in b_trans
+
+    b_tamper = format_anonymity_badge("tampered")
+    assert "TAMPER" in b_tamper
+    assert "\033[1;91m" in b_tamper
+
 
 

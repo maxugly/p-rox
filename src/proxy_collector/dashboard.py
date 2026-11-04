@@ -46,6 +46,41 @@ def format_rate(bps: float) -> str:
     return f"{format_bytes(bps)}/s"
 
 
+def format_anonymity_badge(anonymity: Optional[str], width: int = 7) -> str:
+    """Format anonymity level with ANSI color coding and fixed visible width.
+
+    Tiers:
+      - ELITE: Bold Green
+      - ANON / ANONYMOUS: Yellow
+      - SLOW: Magenta
+      - TRANS / TRANSPARENT: Red
+      - TAMPER / TAMPERED: Bold Red
+      - UNKNOWN: Dimmed
+    """
+    anon = (anonymity or "UNKNOWN").upper()
+    if anon in ("ANONYMOUS", "ANON"):
+        text = "ANON"
+        color = "\033[93m"  # Yellow
+    elif anon == "ELITE":
+        text = "ELITE"
+        color = "\033[1;92m"  # Bold green
+    elif anon == "SLOW":
+        text = "SLOW"
+        color = "\033[35m"  # Magenta
+    elif anon in ("TRANSPARENT", "TRANS"):
+        text = "TRANS"
+        color = "\033[91m"  # Red
+    elif anon in ("TAMPERED", "TAMPER"):
+        text = "TAMPER"
+        color = "\033[1;91m"  # Bold red
+    else:
+        text = anon[:width]
+        color = "\033[2m"  # Dimmed
+
+    padded = f"{text:<{width}}"
+    return f"{color}{padded}\033[0m"
+
+
 def format_uptime(seconds: float) -> str:
     """Format uptime seconds into HH:MM:SS format."""
     s = int(max(0, seconds))
@@ -633,8 +668,20 @@ class TerminalDashboard:
 
         # Security & Anonymity
         if sec:
-            anon_color = "\033[32m" if sec.anonymity == "elite" else ("\033[33m" if sec.anonymity == "anonymous" else "\033[31m")
-            print(f"  \033[1mAnonymity Tier:\033[0m   {anon_color}{sec.anonymity.upper()}\033[0m")
+            anon_upper = (sec.anonymity or "UNKNOWN").upper()
+            if sec.anonymity == "elite":
+                anon_color = "\033[1;92m"
+            elif sec.anonymity == "anonymous":
+                anon_color = "\033[93m"
+            elif sec.anonymity == "slow":
+                anon_color = "\033[35m"
+            elif sec.anonymity == "transparent":
+                anon_color = "\033[91m"
+            elif sec.anonymity == "tampered":
+                anon_color = "\033[1;91m"
+            else:
+                anon_color = "\033[2m"
+            print(f"  \033[1mAnonymity Tier:\033[0m   {anon_color}{anon_upper}\033[0m")
             if sec.leaked_ip:
                 print(f"  \033[1;31m[!] Real IP Leaked:\033[0m {sec.leaked_ip}")
             mitm_status = "\033[31m[!] Tampering / MitM Detected\033[0m" if sec.tls_tampering_detected else "\033[32mClean (Valid CA)\033[0m"

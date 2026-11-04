@@ -17,6 +17,7 @@ from .dashboard import (
     StickyTerminal,
     TerminalDashboard,
     country_code_to_flag,
+    format_anonymity_badge,
     render_sticky_header,
 )
 from .db import DEFAULT_DB_PATH, ProxyDB
@@ -32,6 +33,7 @@ from .operations import (
 )
 from .parsers import parse_line
 from .pool import DEFAULT_CACHE_DIR, DEFAULT_PROXY_FILE, ProxyPool
+from .profiler import ProxyProfiler, discover_local_public_ip
 
 
 def setup_logging(verbose: bool = False):
@@ -63,6 +65,16 @@ def cmd_run(args):
     serve_enabled = getattr(args, "serve", False)
     country = getattr(args, "country", None)
     no_geoip = getattr(args, "no_geoip", False)
+
+    # Discover local machine's public IP once on engine startup for leak detection
+    local_ip = getattr(args, "my_ip", None)
+    if not local_ip and not getattr(args, "no_ip_discovery", False):
+        try:
+            local_ip = discover_local_public_ip(timeout=2.0)
+            if local_ip:
+                logging.getLogger(__name__).info("Discovered local public IP: %s (leak detection enabled)", local_ip)
+        except Exception:
+            local_ip = None
 
     stop_event = threading.Event()
 
@@ -593,9 +605,9 @@ def cmd_run(args):
             flag = country_code_to_flag(code)
             f_str = f"{flag} " if flag else ""
             loc = f"{f_str}{geo.country_code} {geo.city}" if (geo and geo.city) else (f"{f_str}{geo.country_code}" if geo else "??")
-            anon = profile.security.anonymity.upper() if profile.security else ""
+            anon_str = format_anonymity_badge(profile.security.anonymity if profile.security else "UNKNOWN", width=7)
             egress = profile.egress_ip or ""
-            line = f"  \033[92m[ALIVE]\033[0m {url:35} {lat:>6}  {loc:18} {anon:7} (Egress: {egress})"
+            line = f"  \033[92m[ALIVE]\033[0m {url:35} {lat:>6}  {loc:18} {anon_str} (Egress: {egress})"
         else:
             reason = getattr(profile, "last_reason", "") or "failed"
             line = f"  \033[91m[DEAD ]\033[0m {url:35} {reason}"
@@ -623,6 +635,7 @@ def cmd_run(args):
             batch_size=min(50, workers * 2),
             country=country,
             priority_countries_fn=(lambda: server.get_waiting_countries()) if server else None,
+            my_ip=local_ip,
             stop_event=stop_event,
             on_result=on_result,
             on_tick=on_tick,
@@ -742,16 +755,25 @@ def cmd_test(args):
     """Test candidate proxies and record latency, egress IP, and health."""
     db = ProxyDB(db_path=args.db)
 
+    # Discover local machine's public IP once on startup for leak detection
+    local_ip = getattr(args, "my_ip", None)
+    if not local_ip and not getattr(args, "no_ip_discovery", False):
+        try:
+            local_ip = discover_local_public_ip(timeout=2.0)
+            if local_ip:
+                logging.getLogger(__name__).info("Discovered local public IP: %s (leak detection enabled)", local_ip)
+        except Exception:
+            local_ip = None
+
     # Single proxy test mode
     if getattr(args, "proxy", None):
         p_obj = next(parse_line(args.proxy), None)
         if not p_obj:
             print(f"Error: Could not parse proxy string '{args.proxy}'")
             sys.exit(1)
-        from .profiler import ProxyProfiler
 
-        geoip = GeoIPResolver()
-        profiler = ProxyProfiler(geoip_resolver=geoip, timeout=args.timeout)
+        geoip = None if getattr(args, "no_geoip", False) else GeoIPResolver()
+        profiler = ProxyProfiler(geoip_resolver=geoip, my_ip=local_ip, timeout=args.timeout)
         print(f"Testing proxy {p_obj.url}...")
         profile = profiler.profile(p_obj)
         TerminalDashboard.print_profile_card(profile)
@@ -779,9 +801,9 @@ def cmd_test(args):
             lat = f"{profile.latency.tcp_handshake_ms:.0f}ms"
             geo = profile.geo
             loc = f"{geo.country_code} {geo.city}" if (geo and geo.city) else (geo.country_code if geo else "??")
-            anon = profile.security.anonymity.upper() if profile.security else ""
+            anon_str = format_anonymity_badge(profile.security.anonymity if profile.security else "UNKNOWN", width=7)
             egress = profile.egress_ip or ""
-            print(f"  \033[92m[ALIVE]\033[0m {url:35} {lat:>6}  {loc:16} {anon:7} (Egress: {egress})")
+            print(f"  \033[92m[ALIVE]\033[0m {url:35} {lat:>6}  {loc:16} {anon_str} (Egress: {egress})")
         else:
             reason = getattr(profile, "last_reason", "") or "failed"
             print(f"  \033[91m[DEAD ]\033[0m {url:35} {reason}")
@@ -793,6 +815,7 @@ def cmd_test(args):
         keepalive=keepalive,
         timeout=timeout,
         country=country,
+        my_ip=local_ip,
         on_result=on_result,
     )
 
@@ -1011,6 +1034,8 @@ def main():
     parser.add_argument("--sources", type=str, default=None, help="Directory for cached feed files")
     parser.add_argument("--country", "-c", type=str, default=None, help="Filter proxies by country code (e.g. US, DE, FR)")
     parser.add_argument("--no-geoip", "--skip-geoip", action="store_true", help="Disable automatic GeoIP calculation")
+    parser.add_argument("--my-ip", type=str, default=None, help="Explicit host public IP address for leak detection")
+    parser.add_argument("--no-ip-discovery", "--skip-ip-discovery", action="store_true", help="Disable auto-discovery of host public IP")
     parser.add_argument("--serve", action="store_true", help="Start local forward proxy gateway on ports 3030..3039")
     parser.add_argument("--slots", type=int, default=10, help="Number of forward proxy gateway slots (default: 10)")
     parser.add_argument("--base-port", type=int, default=3030, help="Starting base port for gateway slots (default: 3030)")
@@ -1035,6 +1060,8 @@ def main():
     p_run.add_argument("--sources", type=str, default=None)
     p_run.add_argument("--country", "-c", type=str, default=None, help="Filter proxies by country code (e.g. US, DE, FR)")
     p_run.add_argument("--no-geoip", "--skip-geoip", action="store_true", help="Disable automatic GeoIP calculation")
+    p_run.add_argument("--my-ip", type=str, default=None, help="Explicit host public IP address for leak detection")
+    p_run.add_argument("--no-ip-discovery", "--skip-ip-discovery", action="store_true", help="Disable auto-discovery of host public IP")
     p_run.add_argument("--serve", action="store_true", help="Start local forward proxy gateway on ports 3030..3039")
     p_run.add_argument("--slots", type=int, default=10, help="Number of forward proxy gateway slots (default: 10)")
     p_run.add_argument("--base-port", type=int, default=3030, help="Starting base port for gateway slots (default: 3030)")
@@ -1060,6 +1087,8 @@ def main():
     p_test.add_argument("--keepalive", type=int, default=180, help="Heartbeat re-check interval in seconds (default: 180s)")
     p_test.add_argument("--timeout", type=float, default=6.0, help="Socket timeout per test (default: 6.0s)")
     p_test.add_argument("--country", "-c", type=str, default=None, help="Filter candidates to test by country code (e.g. US, DE)")
+    p_test.add_argument("--my-ip", type=str, default=None, help="Explicit host public IP address for leak detection")
+    p_test.add_argument("--no-ip-discovery", "--skip-ip-discovery", action="store_true", help="Disable auto-discovery of host public IP")
     p_test.add_argument("--db", type=str, default=str(DEFAULT_DB_PATH), help="Path to SQLite database")
     p_test.add_argument("--proxy", type=str, default=None, help="Test a single specific proxy URI")
     p_test.set_defaults(func=cmd_test)

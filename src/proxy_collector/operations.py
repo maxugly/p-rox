@@ -170,6 +170,7 @@ def test_candidates(
     timeout: float = 6.0,
     country: Optional[str] = None,
     geoip_resolver: Optional[GeoIPResolver] = None,
+    my_ip: Optional[str] = None,
     on_result: Optional[Callable[[Dict[str, Any], bool, Any], None]] = None,
 ) -> Dict[str, Any]:
     """Test a batch of candidates from the database and record live results."""
@@ -178,7 +179,7 @@ def test_candidates(
         return {"tested": 0, "alive": 0, "dead": 0, "message": "No candidates available for testing."}
 
     resolver = geoip_resolver or GeoIPResolver()
-    profiler = ProxyProfiler(geoip_resolver=resolver, timeout=timeout)
+    profiler = ProxyProfiler(geoip_resolver=resolver, my_ip=my_ip, timeout=timeout)
 
     tested_count = 0
     alive_count = 0
@@ -252,6 +253,7 @@ def run_continuous_worker(
     batch_size: int = 50,
     country: Optional[str] = None,
     priority_countries_fn: Optional[Callable[[], List[str]]] = None,
+    my_ip: Optional[str] = None,
     stop_event: Optional[Any] = None,
     on_result: Optional[Callable[[Dict[str, Any], bool, Any], None]] = None,
     on_tick: Optional[Callable[[Dict[str, Any], float], None]] = None,
@@ -263,7 +265,7 @@ def run_continuous_worker(
     """
     stop = stop_event or threading.Event()
     resolver = GeoIPResolver()
-    profiler = ProxyProfiler(geoip_resolver=resolver, timeout=timeout)
+    profiler = ProxyProfiler(geoip_resolver=resolver, my_ip=my_ip, timeout=timeout)
 
     q_capacity = max(50, workers * 2)
     task_queue: queue.Queue = queue.Queue(maxsize=q_capacity)
